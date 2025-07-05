@@ -35,6 +35,10 @@ const User = new mongoose.Schema(
                 bullet: {
                   type: Number,
                   default: 0
+                },
+                standard: {
+                  type: Number,
+                  default: 0
                 }
               }
             },
@@ -53,6 +57,18 @@ const User = new mongoose.Schema(
               },
               classic: {
                 blitz: { 
+                  wins:{
+                  type: Number,
+                  default: 0
+                  }, losses: {
+                    type: Number,
+                    default: 0
+                  }, draws: {
+                    type: Number,
+                    default: 0
+                  }
+                },
+                standard: { 
                   wins:{
                   type: Number,
                   default: 0

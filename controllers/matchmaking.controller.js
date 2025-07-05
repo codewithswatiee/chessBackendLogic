@@ -1,7 +1,7 @@
 import { Server } from 'socket.io';
 import UserModel from '../models/User.model.js';
 import redisClient from '../config/redis.config.js';
-import { createGameSession } from './game.controller.js';
+// import { createGameSession } from './game.controller.js';
 
 // Supported variants
 const VARIANTS = ['Crazyhouse with Timer', '6Pointer Chess', 'Decay Chess', 'Classic'];
@@ -60,7 +60,7 @@ export async function joinQueue({ userId, socketId, variant, subvariant , io}) {
     let ratingField;
     if (variant === 'Classic') {
       // subvariant must be provided for Classic (either 'blitz' or 'bullet')
-      if (!subvariant || (subvariant !== 'blitz' && subvariant !== 'bullet')) {
+      if (!subvariant || (subvariant !== 'blitz' && subvariant !== 'bullet' && subvariant !== 'standard')) {
         console.error(`[joinQueue] Invalid or missing subvariant for Classic: ${subvariant}`);
         io.to(socketId).emit('queue:error', { message: 'Invalid or missing subvariant for Classic (must be blitz or bullet).' });
         return;

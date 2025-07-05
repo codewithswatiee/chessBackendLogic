@@ -1,10 +1,10 @@
 import dotenv from "dotenv";
-import {
-  createGameSession,
-  processMove,
-  reconnectToSession,
-  endSession,
-} from "../controllers/game.controller.js";
+// import {
+//   createGameSession,
+//   processMove,
+//   reconnectToSession,
+//   endSession,
+// } from "../controllers/game.controller.js";
 import {
   joinQueue,
   leaveQueue,
@@ -101,83 +101,83 @@ const websocketRoutes = (io) => {
   });
 
   // Game namespace for handling chess moves
-  const gameNamespace = io.of("/game");
+  // const gameNamespace = io.of("/game");
 
-  gameNamespace.on("connection", (socket) => {
-    const queryParams = socket.handshake.query;
-    const userId = queryParams.userId;
-    let currentSessionId = null;
+  // gameNamespace.on("connection", (socket) => {
+  //   const queryParams = socket.handshake.query;
+  //   const userId = queryParams.userId;
+  //   let currentSessionId = null;
 
-    if (!userId) {
-      console.error("UserId not provided in handshake query");
-      socket.disconnect(true);
-      return;
-    }
+  //   if (!userId) {
+  //     console.error("UserId not provided in handshake query");
+  //     socket.disconnect(true);
+  //     return;
+  //   }
 
-    // Attempt reconnection
-    socket.on("game:reconnect", async () => {
-      try {
-        const session = await reconnectToSession(userId);
-        if (session) {
-          currentSessionId = session.sessionId;
-          socket.join(session.sessionId);
-          socket.emit("game:reconnected", session);
-        } else {
-          socket.emit("game:expired");
-        }
-      } catch (err) {
-        console.error("Reconnection error:", err);
-        socket.emit("game:error", { message: "Reconnection failed" });
-      }
-    });
+  //   // Attempt reconnection
+  //   socket.on("game:reconnect", async () => {
+  //     try {
+  //       const session = await reconnectToSession(userId);
+  //       if (session) {
+  //         currentSessionId = session.sessionId;
+  //         socket.join(session.sessionId);
+  //         socket.emit("game:reconnected", session);
+  //       } else {
+  //         socket.emit("game:expired");
+  //       }
+  //     } catch (err) {
+  //       console.error("Reconnection error:", err);
+  //       socket.emit("game:error", { message: "Reconnection failed" });
+  //     }
+  //   });
 
-    // Handle moves
-    socket.on("game:move", async (data) => {
-      try {
-        if (!currentSessionId) {
-          throw new Error("No active session");
-        }
+  //   // Handle moves
+  //   socket.on("game:move", async (data) => {
+  //     try {
+  //       if (!currentSessionId) {
+  //         throw new Error("No active session");
+  //       }
 
-        const { newFen, moveData } = await processMove(
-          currentSessionId,
-          userId,
-          data.move
-        );
+  //       const { newFen, moveData } = await processMove(
+  //         currentSessionId,
+  //         userId,
+  //         data.move
+  //       );
 
-        // Broadcast the move to both players
-        socket
-          .to(currentSessionId)
-          .emit("game:move", { fen: newFen, move: moveData });
-        socket.emit("game:moveConfirmed", { fen: newFen, move: moveData });
-      } catch (err) {
-        console.error("Move error:", err);
-        socket.emit("game:error", { message: err.message });
-      }
-    });
+  //       // Broadcast the move to both players
+  //       socket
+  //         .to(currentSessionId)
+  //         .emit("game:move", { fen: newFen, move: moveData });
+  //       socket.emit("game:moveConfirmed", { fen: newFen, move: moveData });
+  //     } catch (err) {
+  //       console.error("Move error:", err);
+  //       socket.emit("game:error", { message: err.message });
+  //     }
+  //   });
 
-    // Handle forfeit/resignation
-    socket.on("game:forfeit", async () => {
-      if (currentSessionId) {
-        await endSession(currentSessionId, "forfeit");
-        gameNamespace
-          .to(currentSessionId)
-          .emit("game:ended", { reason: "forfeit" });
-      }
-    });
+  //   // Handle forfeit/resignation
+  //   socket.on("game:forfeit", async () => {
+  //     if (currentSessionId) {
+  //       await endSession(currentSessionId, "forfeit");
+  //       gameNamespace
+  //         .to(currentSessionId)
+  //         .emit("game:ended", { reason: "forfeit" });
+  //     }
+  //   });
 
     // Handle disconnection
-    socket.on("disconnect", async () => {
-      if (currentSessionId) {
-        // Don't end session immediately, wait for potential reconnect
-        setTimeout(async () => {
-          const session = await reconnectToSession(userId);
-          if (!session) {
-            await endSession(currentSessionId, "disconnected");
-          }
-        }, 30000); // 30 second grace period
-      }
-    });
-  });
+  //   socket.on("disconnect", async () => {
+  //     if (currentSessionId) {
+  //       // Don't end session immediately, wait for potential reconnect
+  //       setTimeout(async () => {
+  //         const session = await reconnectToSession(userId);
+  //         if (!session) {
+  //           await endSession(currentSessionId, "disconnected");
+  //         }
+  //       }, 30000); // 30 second grace period
+  //     }
+  //   });
+  // });
 };
 
 export default websocketRoutes;
