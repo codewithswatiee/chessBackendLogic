@@ -1,7 +1,8 @@
 import { Server } from 'socket.io';
 import UserModel from '../models/User.model.js';
 import redisClient from '../config/redis.config.js';
-// import { createGameSession } from './game.controller.js';
+import { createGameSession } from './session.controller.js';
+import gameModel from '../models/game.model.js';
 
 // Supported variants
 const VARIANTS = ['Crazyhouse with Timer', '6Pointer Chess', 'Decay Chess', 'Classic'];
@@ -302,8 +303,8 @@ async function tryMatch(userId, variant, io, byRank) {
     // Fetch user details for both users
     let userDoc, matchDoc;
     try {
-      userDoc = await UserModel.findById(userId).select('_id name');
-      matchDoc = await UserModel.findById(bestMatch.userId).select('_id name');
+      userDoc = await UserModel.findById(userId).select('_id name ratings');
+      matchDoc = await UserModel.findById(bestMatch.userId).select('_id name ratings');
       console.log("Found both users")
     } catch (err) {
       console.error(`[tryMatch] Error fetching user details:`, err);
@@ -319,25 +320,63 @@ async function tryMatch(userId, variant, io, byRank) {
       return false;
     }
     
-    // Create game session
-    // const sessionId = await createGameSession(
-    //   { userId: userDoc._id, name: userDoc.name },
-    //   { userId: matchDoc._id, name: matchDoc.name },
-    //   variant
-    // );
-    // console.log(`[tryMatch] Created game session: ${sessionId}`);
+
+    console.log(user.subvariant)
+    const subvariant = user.subvariant; 
+
+    console.log(userDoc.ratings?.classic?.[subvariant])
+    const player1 = {
+        userId: userDoc._id.toString(),
+        username: userDoc.name,
+        rating: variant === 'Classic' ? userDoc.ratings?.classic?.[subvariant] : userDoc.ratings?.[getRatingField(variant)],
+    }
+
+    const player2 = {
+        userId: matchDoc._id.toString(),
+        username: matchDoc.name,
+        rating: variant === 'Classic' ? matchDoc.ratings?.classic?.[subvariant] : matchDoc.ratings?.[getRatingField(variant)],
+    }
+    const {sessionId, gameState} = await createGameSession(
+      player1,
+      player2,
+      variant.toLowerCase(),
+      subvariant,
+    )
+    console.log(`[tryMatch] Created game session: ${sessionId}, gameState:`, gameState);
     
     // Send session info with match notification
     userSocket.emit('queue:matched', { 
       opponent: { userId: matchDoc._id, name: matchDoc.name }, 
       variant,
-      // sessionId 
+      sessionId ,
+      gameState,
+      subvariant,
     });
     matchSocket.emit('queue:matched', { 
       opponent: { userId: userDoc._id, name: userDoc.name }, 
       variant,
-      // sessionId 
+      sessionId ,
+      gameState,
+      subvariant,
     });
+
+    const updateGameModel = await gameModel.insertOne({
+      sessionId,
+      players: {
+        white: gameState.players.white.userId,
+        black: gameState.players.black.userId,
+      },
+      variant: variant.toLowerCase(),
+      subvariant,
+      startedAt: new Date(),
+    }, { new: true });
+
+    if (!updateGameModel) {
+      console.error(`[tryMatch] Error updating game model for session ${sessionId}`);
+      userSocket.emit('queue:error', { message: 'Failed to update game model.' });
+      matchSocket.emit('queue:error', { message: 'Failed to update game model.' });
+      return false;
+    }
     
     console.log(`[Matched] Successfully matched user ${userId} with ${bestMatch.userId} in ${variant}`);
     
@@ -346,6 +385,7 @@ async function tryMatch(userId, variant, io, byRank) {
     await redisClient.del(userKey(bestMatch.userId));
     
     return true;
+    
     
   } catch (err) {
     console.error(`[tryMatch] Error for user ${userId}:`, err);

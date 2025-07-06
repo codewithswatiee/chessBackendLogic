@@ -3,15 +3,17 @@ import mongoose from "mongoose";
 const Game = new mongoose.Schema(
     {
         variant: String, 
+        sessionId: String, // For tracking game sessions
+        subvariant: String,
         pointMode: Number, 
         players: {
           white: {
             type: mongoose.Schema.Types.ObjectId,
-            ref: "User"
+            ref: "User",
           },
           black: {
             type: mongoose.Schema.Types.ObjectId,
-            ref: "User"
+            ref: "User",
           }
         },
         moves: [{
