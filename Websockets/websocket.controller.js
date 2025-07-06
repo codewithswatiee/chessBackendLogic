@@ -22,7 +22,7 @@ const websocketRoutes = (io) => {
   const matchmakingNamespace = io.of("/matchmaking");
 
   matchmakingNamespace.on("connection", (socket) => {
-    const queryParams = socket.handshake.query;
+    const queryParams = socket.handshake.auth;
     const userId = queryParams.userId;
 
     if (!userId) {
@@ -106,9 +106,9 @@ const websocketRoutes = (io) => {
   const gameNamespace = io.of("/game");
 
   gameNamespace.on("connection", (socket) => {
-    const queryParams = socket.handshake.query;
-    const userId = queryParams.userId;
-    const sessionId = queryParams.sessionId;
+    const queryParams = socket.handshake.auth;
+    console.log("queryParams:", queryParams);
+    const {userId, sessionId} = queryParams;
     console.log("User connected to game socket:", socket.id, "UserId:", userId, "SessionId:", sessionId);
 
     if (!userId || !sessionId) {
@@ -139,6 +139,7 @@ const websocketRoutes = (io) => {
     socket.on("game:getPossibleMoves", async ({ square }) => {
       try {
         const moves = await getPossibleMoves({ sessionId, square });
+        console.log("Possible moves for square", square, ":", moves);
         socket.emit("game:possibleMoves", { square, moves });
       } catch (err) {
         socket.emit("game:error", { message: err.message });

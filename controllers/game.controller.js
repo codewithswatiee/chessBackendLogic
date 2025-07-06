@@ -66,6 +66,7 @@ export async function makeMove({ sessionId, userId, move, timestamp }) {
 
 // Get possible moves for a piece
 export async function getPossibleMoves({ sessionId, square }) {
+    console.log("Getting possible moves for square:", square);
   const session = await getSessionById(sessionId);
   if (!session) throw new Error('Session not found');
   const { gameState } = session;
