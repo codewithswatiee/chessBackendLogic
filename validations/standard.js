@@ -292,4 +292,5 @@ export function updateRepetitionMap(state, gameInstance) {
 
   const current = state.repetitionMap.get(fen) || 0
   state.repetitionMap.set(fen, current + 1)
-  console.log("Repetition map updated for FEN:", fen, "Count:", 
+  console.log("Repetition map updated for FEN:", fen, "Count:", counter + 1)
+}
