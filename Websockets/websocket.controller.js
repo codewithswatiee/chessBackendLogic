@@ -112,26 +112,28 @@ const websocketRoutes = (io) => {
     console.log("User connected to game socket:", socket.id, "UserId:", userId, "SessionId:", sessionId);
 
     if (!userId || !sessionId) {
-      console.error("UserId/sessionId not provided in handshake query");
+      console.error("UserId/sessionId not provided in handshake auth");
       socket.disconnect(true);
       return;
     }
 
+    // Join the session room so both players get updates
+    socket.join(sessionId);
+    console.log(`User ${userId} joined session room ${sessionId}`);
     // --- Outgoing events from client ---
     // Make move
     socket.on("game:makeMove", async ({ move, timestamp }) => {
       try {
         console.log("Received game:makeMove for user", userId, "session", sessionId, "move", move);
         const { move: moveObj, gameState } = await makeMove({ sessionId, userId, move, timestamp });
+        // Always emit all game events to the whole session
         gameNamespace.to(sessionId).emit("game:move", { move: moveObj, gameState });
-        // Optionally emit timer update
         gameNamespace.to(sessionId).emit("game:timer", { timers: gameState.board.whiteTime, black: gameState.board.blackTime });
-        // If game ended
         if (gameState.status === 'finished') {
           gameNamespace.to(sessionId).emit("game:end", { gameState });
         }
       } catch (err) {
-        socket.emit("game:error", { message: err.message });
+        gameNamespace.to(sessionId).emit("game:error", { message: err.message });
       }
     });
 
@@ -140,9 +142,9 @@ const websocketRoutes = (io) => {
       try {
         const moves = await getPossibleMoves({ sessionId, square });
         console.log("Possible moves for square", square, ":", moves);
-        socket.emit("game:possibleMoves", { square, moves });
+        gameNamespace.to(sessionId).emit("game:possibleMoves", { square, moves });
       } catch (err) {
-        socket.emit("game:error", { message: err.message });
+        gameNamespace.to(sessionId).emit("game:error", { message: err.message });
       }
     });
 
@@ -152,7 +154,7 @@ const websocketRoutes = (io) => {
         const { gameState } = await resign({ sessionId, userId });
         gameNamespace.to(sessionId).emit("game:end", { gameState });
       } catch (err) {
-        socket.emit("game:error", { message: err.message });
+        gameNamespace.to(sessionId).emit("game:error", { message: err.message });
       }
     });
 
@@ -162,7 +164,7 @@ const websocketRoutes = (io) => {
         const { gameState } = await offerDraw({ sessionId, userId });
         gameNamespace.to(sessionId).emit("game:gameState", { gameState });
       } catch (err) {
-        socket.emit("game:error", { message: err.message });
+        gameNamespace.to(sessionId).emit("game:error", { message: err.message });
       }
     });
 
@@ -172,7 +174,7 @@ const websocketRoutes = (io) => {
         const { gameState } = await acceptDraw({ sessionId, userId });
         gameNamespace.to(sessionId).emit("game:end", { gameState });
       } catch (err) {
-        socket.emit("game:error", { message: err.message });
+        gameNamespace.to(sessionId).emit("game:error", { message: err.message });
       }
     });
 
@@ -182,7 +184,7 @@ const websocketRoutes = (io) => {
         const { gameState } = await declineDraw({ sessionId, userId });
         gameNamespace.to(sessionId).emit("game:gameState", { gameState });
       } catch (err) {
-        socket.emit("game:error", { message: err.message });
+        gameNamespace.to(sessionId).emit("game:error", { message: err.message });
       }
     });
 

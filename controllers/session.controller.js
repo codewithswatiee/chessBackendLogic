@@ -1,11 +1,10 @@
-
 import { v4 as uuidv4 } from 'uuid';
 import redisClient, { 
   sessionKey, 
   userSessionKey, 
   SESSION_TIMEOUT 
 } from '../config/redis.config.js';
-import { createInitialState as createStandardInitialState } from '../validations/standard.js';
+import { createInitialState as createStandardInitialState, convertBigIntToNumber } from '../validations/standard.js';
 
 // Game variants and their configurations
 const GAME_VARIANTS = {
@@ -148,6 +147,7 @@ function createInitialGameState(variant, subvariant, whitePlayer, blackPlayer) {
   if (variant === 'classic' && subvariant === 'standard') {
     const now = Date.now();
     const state = createStandardInitialState();
+  
     // Attach player and session/game metadata as before
     return {
       board: state,
@@ -172,44 +172,44 @@ function createInitialGameState(variant, subvariant, whitePlayer, blackPlayer) {
         }
       },
       timeControl: {
-      type: getTimeControlType(timeControl),
-      baseTime: timeControl.base,
-      increment: timeControl.increment,
-      timers: {
-        white: timeControl.base,
-        black: timeControl.base
+        type: getTimeControlType(timeControl),
+        baseTime: timeControl.base,
+        increment: timeControl.increment,
+        timers: {
+          white: timeControl.base,
+          black: timeControl.base
+        },
+        timeSpent: {
+          white: [],
+          black: []
+        },
+        flagged: {
+          white: false,
+          black: false
+        }
       },
-      timeSpent: {
-        white: [],
-        black: []
+      status: 'active',
+      result: CHESS_CONSTANTS.GAME_RESULTS.ONGOING,
+      resultReason: null,
+      winner: null,
+      moves: [],
+      moveCount: 0,
+      lastMove: null,
+      gameState: {
+        check: false,
+        checkmate: false,
+        stalemate: false,
+        insufficientMaterial: false,
+        threefoldRepetition: false,
+        fiftyMoveRule: false
       },
-      flagged: {
-        white: false,
-        black: false
-      }
-    },
-    status: 'active',
-    result: CHESS_CONSTANTS.GAME_RESULTS.ONGOING,
-    resultReason: null,
-    winner: null,
-    moves: [],
-    moveCount: 0,
-    lastMove: null,
-    gameState: {
-      check: false,
-      checkmate: false,
-      stalemate: false,
-      insufficientMaterial: false,
-      threefoldRepetition: false,
-      fiftyMoveRule: false
-    },
-    positionHistory: [gameConfig.initialFen],
-    createdAt: now,
-    lastActivity: now,
-    startedAt: now,
-    endedAt: null,
-    rules: getChessRules(variant, subvariant),
-    metadata: {
+      positionHistory: [gameConfig.initialFen],
+      createdAt: Number(now),
+      lastActivity: Number(now),
+      startedAt: Number(now),
+      endedAt: null,
+      rules: getChessRules(variant, subvariant),
+      metadata: {
         source: 'matchmaking',
         rated: true,
         spectators: [],
@@ -328,9 +328,9 @@ function getTimeControlType(timeControl) {
   const incrementSeconds = timeControl.increment / 1000;
   
   // Chess.com time control categories
-  if (baseMinutes < 3 || (baseMinutes <= 3 && incrementSeconds <= 2)) {
+  if (baseMinutes <= 1 || (baseMinutes <= 1 && incrementSeconds == 0)) {
     return 'bullet';
-  } else if (baseMinutes <= 10 || (baseMinutes <= 15 && incrementSeconds <= 10)) {
+  } else if (baseMinutes <= 3 || (baseMinutes <= 3 && incrementSeconds <= 2)) {
     return 'blitz';
   } else {
     return 'standard';
@@ -542,7 +542,7 @@ export async function createGameSession(player1, player2, variant, subvariant, c
     // Prepare session data for Redis
     const sessionData = {
       sessionId,
-      gameState: JSON.stringify(gameState),
+      gameState: JSON.stringify(convertBigIntToNumber(gameState)),
       playerWhiteId: whitePlayer.userId,
       playerBlackId: blackPlayer.userId,
       variant,
@@ -550,7 +550,7 @@ export async function createGameSession(player1, player2, variant, subvariant, c
       status: 'active',
       createdAt: Date.now().toString(),
       lastActivity: Date.now().toString(),
-      timeControl: JSON.stringify(gameState.timeControl)
+      timeControl: JSON.stringify(convertBigIntToNumber(gameState.timeControl))
     };
     
     // Store in Redis using transaction for atomicity
@@ -611,9 +611,9 @@ export async function getSessionById(sessionId) {
       return null;
     }
     
-    // Parse game state
-    const gameState = JSON.parse(sessionData.gameState);
-    
+    // Parse game state and convert any BigInt to Number (defensive)
+    let gameState = JSON.parse(sessionData.gameState);
+    gameState = convertBigIntToNumber(gameState);
     return {
       sessionId,
       gameState,
@@ -690,7 +690,7 @@ export async function updateGameState(sessionId, gameState) {
     
     const multi = redisClient.multi();
     multi.hSet(sessionKey(sessionId), {
-      gameState: JSON.stringify(gameState),
+      gameState: JSON.stringify(convertBigIntToNumber(gameState)),
       lastActivity: Date.now().toString(),
       status: gameState.status
     });

@@ -7,14 +7,30 @@ import { getSessionById, updateGameState } from './session.controller.js';
 // Make a move
 export async function makeMove({ sessionId, userId, move, timestamp }) {
   const session = await getSessionById(sessionId);
+  console.log("Making move:", move, "for user:", userId, "at timestamp:", timestamp);
   if (!session) throw new Error('Session not found');
   const { gameState } = session;
+
+  console.log("Current game state:", gameState);
+
+
   const color = (gameState.players.white.userId === userId) ? 'white' : (gameState.players.black.userId === userId) ? 'black' : null;
   if (!color) throw new Error('User not a player in this game');
   if (gameState.status !== 'active') throw new Error('Game is not active');
 
-  // Validate and apply move
+  // Validate that the move is one of the possible moves
+  const fen = gameState.board.fen;
+  console.log("Current FEN:", fen);
+  const possibleMoves = getLegalMoves(fen).filter(m => m.from === move.from);
+  console.log("Moves received:", move);
+  console.log("Possible moves for square", move.from, ":", possibleMoves);
+
+  const isMoveLegal = possibleMoves.some(m => m.from === move.from && m.to === move.to && (!m.promotion || m.promotion === move.promotion));
+  if (!isMoveLegal) throw new Error('Move is not legal');
+
+  // Apply move
   const result = validateAndApplyMove(gameState.board, move, color, timestamp);
+  console.log("Move result:", result);
   if (!result.valid) throw new Error(result.reason || 'Invalid move');
 
   // Update game state
@@ -24,6 +40,9 @@ export async function makeMove({ sessionId, userId, move, timestamp }) {
   gameState.lastMove = result.move;
   gameState.positionHistory.push(result.state.fen);
   gameState.gameState = result;
+
+  // Change activeColor to next player
+  gameState.board.activeColor = (color === 'white') ? 'black' : 'white';
 
   // Check for game end
   if (result.result && result.result !== 'ongoing') {
@@ -61,6 +80,7 @@ export async function makeMove({ sessionId, userId, move, timestamp }) {
   }
 
   await updateGameState(sessionId, gameState);
+  console.log("Game state after move:", gameState);
   return { move: result.move, gameState };
 }
 
@@ -79,7 +99,7 @@ export async function getPossibleMoves({ sessionId, square }) {
 export async function resign({ sessionId, userId }) {
   const session = await getSessionById(sessionId);
   if (!session) throw new Error('Session not found');
-  const { gameState } = session;
+  const { gameState } = session
   if (gameState.status !== 'active') throw new Error('Game is not active');
   const color = (gameState.players.white.userId === userId) ? 'white' : (gameState.players.black.userId === userId) ? 'black' : null;
   if (!color) throw new Error('User not a player in this game');
