@@ -4,7 +4,8 @@ import redisClient, {
   userSessionKey, 
   SESSION_TIMEOUT 
 } from '../config/redis.config.js';
-import { createInitialState as createStandardInitialState, convertBigIntToNumber } from '../validations/standard.js';
+import { createInitialState as createStandardInitialState, convertBigIntToNumber } from '../validations/classic/standard.js';
+import { createInitialState as createBlitzInitialState } from '../validations/classic/blitz.js';
 
 // Game variants and their configurations
 const GAME_VARIANTS = {
@@ -149,6 +150,89 @@ function createInitialGameState(variant, subvariant, whitePlayer, blackPlayer) {
     const state = createStandardInitialState();
   
     // Attach player and session/game metadata as before
+    return {
+      board: state,
+      sessionId: null,
+      variantName: GAME_VARIANTS[variant].name,
+      subvariantName: GAME_VARIANTS[variant].subvariants[subvariant].name,
+      description: GAME_VARIANTS[variant].subvariants[subvariant].description,
+      players: {
+        white: {
+          userId: whitePlayer.userId,
+          username: whitePlayer.username,
+          rating: whitePlayer.rating,
+          avatar: whitePlayer.avatar || null,
+          title: whitePlayer.title || null
+        },
+        black: {
+          userId: blackPlayer.userId,
+          username: blackPlayer.username,
+          rating: blackPlayer.rating,
+          avatar: blackPlayer.avatar || null,
+          title: blackPlayer.title || null
+        }
+      },
+      timeControl: {
+        type: getTimeControlType(timeControl),
+        baseTime: timeControl.base,
+        increment: timeControl.increment,
+        timers: {
+          white: timeControl.base,
+          black: timeControl.base
+        },
+        timeSpent: {
+          white: [],
+          black: []
+        },
+        flagged: {
+          white: false,
+          black: false
+        }
+      },
+      status: 'active',
+      result: CHESS_CONSTANTS.GAME_RESULTS.ONGOING,
+      resultReason: null,
+      winner: null,
+      moves: [],
+      moveCount: 0,
+      lastMove: null,
+      gameState: {
+        check: false,
+        checkmate: false,
+        stalemate: false,
+        insufficientMaterial: false,
+        threefoldRepetition: false,
+        fiftyMoveRule: false
+      },
+      positionHistory: [gameConfig.initialFen],
+      createdAt: Number(now),
+      lastActivity: Number(now),
+      startedAt: Number(now),
+      endedAt: null,
+      rules: getChessRules(variant, subvariant),
+      metadata: {
+        source: 'matchmaking',
+        rated: true,
+        spectators: [],
+        allowSpectators: true,
+        drawOffers: {
+          white: false,
+          black: false
+        },
+        resignations: {
+          white: false,
+          black: false
+        },
+        premoves: {
+          white: null,
+          black: null
+        }
+      }
+    };
+  } else if (variant === 'classic' && subvariant === 'blitz') {
+    const now = Date.now();
+    const state = createBlitzInitialState()
+
     return {
       board: state,
       sessionId: null,

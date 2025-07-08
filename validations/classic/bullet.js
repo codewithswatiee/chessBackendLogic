@@ -1,23 +1,5 @@
 import { Chess } from "chess.js"
 
-// Helper: Recursively convert BigInt values to Number for JSON serialization
-export function convertBigIntToNumber(obj) {
-  if (typeof obj === "bigint") {
-    return Number(obj)
-  } else if (Array.isArray(obj)) {
-    return obj.map(convertBigIntToNumber)
-  } else if (obj && typeof obj === "object") {
-    const newObj = {}
-    for (const key in obj) {
-      if (Object.prototype.hasOwnProperty.call(obj, key)) {
-        newObj[key] = convertBigIntToNumber(obj[key])
-      }
-    }
-    return newObj
-  }
-  return obj
-}
-
 // Helper: Validate ObjectId format
 export function isValidObjectId(id) {
   if (!id) return false
@@ -138,7 +120,7 @@ export async function safeDatabaseOperation(operation, context = "unknown") {
   }
 }
 
-// Create initial state for a 10-minute game
+// Create initial state for a bullet game (1+0)
 export function createInitialState() {
   try {
     const game = new Chess() // default position
@@ -146,6 +128,8 @@ export function createInitialState() {
     const [position, activeColor, castlingRights, enPassantSquare, halfmoveClock, fullmoveNumber] = fen.split(" ")
 
     const now = Date.now()
+    const bulletTime = 1 * 60 * 1000 // 1 minute in milliseconds
+    const increment = 0 // No increment for bullet
 
     return {
       fen,
@@ -155,36 +139,38 @@ export function createInitialState() {
       enPassantSquare,
       halfmoveClock: Number.parseInt(halfmoveClock),
       fullmoveNumber: Number.parseInt(fullmoveNumber),
-      whiteTime: 600000, // 10 minutes in ms
-      blackTime: 600000,
+      whiteTime: bulletTime,
+      blackTime: bulletTime,
+      increment: increment, // 0 second increment
+      timeControl: "bullet", // Identify game type
       turnStartTimestamp: now,
       lastMoveTimestamp: now,
       moveHistory: [],
-      gameStarted: false, // Track if game has actually started
-      firstMoveTimestamp: null, // Track when the first move was made
+      gameStarted: false,
+      firstMoveTimestamp: null,
       capturedPieces: {
-        white: [], // Pieces captured by white (black pieces)
-        black: [], // Pieces captured by black (white pieces)
+        white: [],
+        black: [],
       },
-      gameEnded: false, // Track if game has ended
-      endReason: null, // Reason for game ending
-      winner: null, // Winner of the game
-      endTimestamp: null, // When the game ended
+      gameEnded: false,
+      endReason: null,
+      winner: null,
+      endTimestamp: null,
     }
   } catch (error) {
-    console.error("Error creating initial state:", error)
+    console.error("Error creating initial bullet state:", error)
     throw error
   }
 }
 
-// Validate a move and update timers properly
+// Validate a move and update timers (no increment for bullet)
 export function validateAndApplyMove(state, move, playerColor, currentTimestamp) {
   try {
-    console.log("=== MOVE VALIDATION START ===")
+    console.log("=== BULLET MOVE VALIDATION START ===")
     console.log("Move:", move, "Player:", playerColor)
     console.log("Game started:", state.gameStarted, "First move timestamp:", state.firstMoveTimestamp)
     console.log("Current state - White time:", state.whiteTime, "Black time:", state.blackTime)
-    console.log("Turn start timestamp:", state.turnStartTimestamp)
+    console.log("Increment:", state.increment, "ms (NO INCREMENT)")
 
     // Validate input parameters
     if (!state || typeof state !== "object") {
@@ -214,7 +200,7 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
       }
     }
 
-    // Always reconstruct game from FEN to avoid corrupted Chess.js instances after deserialization
+    // Reconstruct game from FEN
     let game
     if (state.fen) {
       try {
@@ -228,11 +214,12 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
       return { valid: false, reason: "Invalid state: missing FEN", code: "MISSING_FEN" }
     }
 
-    // Initialize timer values if missing
+    // Initialize timer values (no increment for bullet)
     if (typeof state.turnStartTimestamp !== "number") state.turnStartTimestamp = currentTimestamp
     if (typeof state.lastMoveTimestamp !== "number") state.lastMoveTimestamp = currentTimestamp
-    if (typeof state.whiteTime !== "number") state.whiteTime = 600000
-    if (typeof state.blackTime !== "number") state.blackTime = 600000
+    if (typeof state.whiteTime !== "number") state.whiteTime = 1 * 60 * 1000
+    if (typeof state.blackTime !== "number") state.blackTime = 1 * 60 * 1000
+    if (typeof state.increment !== "number") state.increment = 0
     if (!state.moveHistory) state.moveHistory = []
     if (!state.repetitionMap) state.repetitionMap = new Map()
     if (typeof state.gameStarted !== "boolean") state.gameStarted = false
@@ -245,7 +232,7 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
       state.gameEnded = true
       state.endReason = "timeout"
       state.winnerColor = "black"
-      state.winner = null // Will be set by calling function
+      state.winner = null
       state.endTimestamp = currentTimestamp
       console.log("WHITE TIMEOUT - Game ended, black wins")
       return {
@@ -265,7 +252,7 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
       state.gameEnded = true
       state.endReason = "timeout"
       state.winnerColor = "white"
-      state.winner = null // Will be set by calling function
+      state.winner = null
       state.endTimestamp = currentTimestamp
       console.log("BLACK TIMEOUT - Game ended, white wins")
       return {
@@ -282,8 +269,7 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
       }
     }
 
-    // IMPORTANT: Get the current player BEFORE making the move
-    // This is the player who is making the move and whose time should be deducted
+    // Get the current player BEFORE making the move
     const currentPlayerBeforeMove = game.turn() // 'w' or 'b'
     const currentPlayerColor = currentPlayerBeforeMove === "w" ? "white" : "black"
 
@@ -302,16 +288,14 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
       state.firstMoveTimestamp = currentTimestamp
       state.turnStartTimestamp = currentTimestamp
       state.lastMoveTimestamp = currentTimestamp
-
-      // For the first move, don't deduct any time - just start the timer
       console.log("First move - no time deduction, just starting timers")
     } else {
-      // Calculate elapsed time since the turn started (for subsequent moves)
+      // Calculate elapsed time since the turn started
       const elapsed = currentTimestamp - state.turnStartTimestamp
       console.log("Elapsed time since turn started:", elapsed, "ms")
       console.log("Times before deduction - White:", state.whiteTime, "Black:", state.blackTime)
 
-      // Deduct time from the player who is making the move (current player)
+      // Deduct time from the player who is making the move
       if (currentPlayerBeforeMove === "w") {
         const newWhiteTime = Math.max(0, state.whiteTime - elapsed)
         console.log("WHITE MOVE: Deducting", elapsed, "ms from white time")
@@ -381,6 +365,9 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
     console.log("Move result:", result)
     if (!result) return { valid: false, reason: "Illegal move", code: "ILLEGAL_MOVE" }
 
+    // BULLET SPECIFIC: NO INCREMENT - Time only decreases, never increases
+    console.log("BULLET: No increment added - time only decreases")
+
     // Track captured pieces
     if (capturedPiece) {
       const capturingPlayer = currentPlayerBeforeMove === "w" ? "white" : "black"
@@ -392,20 +379,18 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
     const oldFen = state.fen
     state.fen = game.fen()
     state.lastMoveTimestamp = currentTimestamp
-
-    // CRITICAL: Reset turn start timestamp for the NEXT player's turn
     state.turnStartTimestamp = currentTimestamp
     state.moveHistory.push(result)
 
     // Update the active color to reflect whose turn it is now
-    const newActivePlayer = game.turn() // 'w' or 'b' - this is now the NEXT player
+    const newActivePlayer = game.turn()
     state.activeColor = newActivePlayer === "w" ? "white" : "black"
 
     console.log("Move completed:")
     console.log("- FEN changed from:", oldFen.split(" ")[0], "to:", state.fen.split(" ")[0])
     console.log("- Next player's turn:", newActivePlayer, "Active color:", state.activeColor)
     console.log("- Turn start timestamp reset to:", state.turnStartTimestamp)
-    console.log("- Final times - White:", state.whiteTime, "Black:", state.blackTime)
+    console.log("- Final times (NO INCREMENT) - White:", state.whiteTime, "Black:", state.blackTime)
     console.log("- Move count:", state.moveHistory.length)
 
     // Update repetition tracking
@@ -414,38 +399,22 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
     const resultStatus = checkGameStatus(state, game)
     console.log("Game status after move:", resultStatus)
 
-    // Check if the game has ended due to checkmate, stalemate, etc.
+    // Check if the game has ended
     if (resultStatus.result !== "ongoing") {
       state.gameEnded = true
       state.endReason = resultStatus.result
-
-      // FIXED: Store winner as user ID, not color string
-      if (resultStatus.winner) {
-        // Get the actual user ID of the winning player
-        const winnerColor = resultStatus.winner // "white" or "black"
-        state.winnerColor = winnerColor // Store the color for reference
-        state.winner = null // Will be set by the calling function with actual user ID
-      } else {
-        state.winner = null
-        state.winnerColor = null
-      }
-
+      state.winnerColor = resultStatus.winnerColor || null
       state.endTimestamp = currentTimestamp
-      console.log(
-        `GAME ENDED: ${resultStatus.result}`,
-        resultStatus.winner ? `Winner color: ${resultStatus.winner}` : "",
-      )
-
-      // Add navigation flag for game ending
+      console.log(`GAME ENDED: ${resultStatus.result}`)
       resultStatus.shouldNavigateToMenu = true
       resultStatus.endTimestamp = currentTimestamp
-      resultStatus.winnerColor = state.winnerColor // Pass winner color to caller
+      resultStatus.winnerColor = state.winnerColor
     }
 
-    // Remove any accidental Chess instance before returning state
+    // Remove Chess instance before returning
     if (state.game) delete state.game
 
-    // Add detailed game state info for frontend
+    // Add detailed game state info
     state.gameState = {
       check: game.inCheck ? game.inCheck() : false,
       checkmate: game.isCheckmate(),
@@ -464,14 +433,20 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
       promotionAvailable: result && result.flags && result.flags.includes("p"),
       lastMove: result,
       result: resultStatus.result,
-      winner: resultStatus.winner || null,
+      winner: resultStatus.winnerColor && state.players && state.players[resultStatus.winnerColor] ? state.players[resultStatus.winnerColor].username : null,
+      winnerId:
+        resultStatus.winnerColor && state.players && state.players[resultStatus.winnerColor]
+          ? state.players[resultStatus.winnerColor]._id || null
+          : null,
       drawReason: resultStatus.reason || null,
       gameEnded: state.gameEnded,
       endReason: state.endReason,
       endTimestamp: state.endTimestamp,
+      timeControl: "bullet",
+      increment: state.increment,
     }
 
-    console.log("=== MOVE VALIDATION END ===")
+    console.log("=== BULLET MOVE VALIDATION END ===")
 
     return {
       valid: true,
@@ -481,10 +456,12 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
       endReason: state.endReason,
       endTimestamp: state.endTimestamp,
       code: "SUCCESS",
+      winnerColor: state.winnerColor,
+      winner: state.winner,
       ...resultStatus,
     }
   } catch (error) {
-    console.error("Error in validateAndApplyMove:", error)
+    console.error("Error in bullet validateAndApplyMove:", error)
     return {
       valid: false,
       reason: "Internal error during move validation",
@@ -495,17 +472,19 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
   }
 }
 
-// Get current timer values (useful for periodic updates)
+// Get current timer values for bullet games
 export function getCurrentTimers(state, currentTimestamp) {
   try {
     // Validate input
     if (!state || typeof state !== "object") {
-      console.error("[TIMER] Invalid state provided to getCurrentTimers")
+      console.error("[BULLET TIMER] Invalid state provided to getCurrentTimers")
       return {
-        white: 600000,
-        black: 600000,
+        white: 1 * 60 * 1000,
+        black: 1 * 60 * 1000,
         activeColor: "white",
         gameEnded: false,
+        timeControl: "bullet",
+        increment: 0,
         error: "Invalid state",
       }
     }
@@ -525,15 +504,19 @@ export function getCurrentTimers(state, currentTimestamp) {
         winner: state.winner,
         shouldNavigateToMenu: true,
         endTimestamp: state.endTimestamp,
+        timeControl: "bullet",
+        increment: state.increment || 0,
       }
     }
 
     if (!state.gameStarted || !state.turnStartTimestamp || state.moveHistory.length === 0) {
       return {
-        white: state.whiteTime || 600000,
-        black: state.blackTime || 600000,
+        white: state.whiteTime || 1 * 60 * 1000,
+        black: state.blackTime || 1 * 60 * 1000,
         activeColor: state.activeColor || "white",
         gameEnded: false,
+        timeControl: "bullet",
+        increment: state.increment || 0,
       }
     }
 
@@ -542,31 +525,33 @@ export function getCurrentTimers(state, currentTimestamp) {
     try {
       game = new Chess(state.fen)
     } catch (error) {
-      console.error("[TIMER] Error reconstructing game from FEN:", error)
+      console.error("[BULLET TIMER] Error reconstructing game from FEN:", error)
       return {
-        white: state.whiteTime || 600000,
-        black: state.blackTime || 600000,
+        white: state.whiteTime || 1 * 60 * 1000,
+        black: state.blackTime || 1 * 60 * 1000,
         activeColor: state.activeColor || "white",
         gameEnded: false,
+        timeControl: "bullet",
+        increment: state.increment || 0,
         error: "Invalid FEN",
       }
     }
 
-    const currentPlayer = game.turn() // 'w' or 'b'
+    const currentPlayer = game.turn()
     const currentPlayerColor = currentPlayer === "w" ? "white" : "black"
     const elapsed = currentTimestamp - state.turnStartTimestamp
 
-    let whiteTime = state.whiteTime || 600000
-    let blackTime = state.blackTime || 600000
+    let whiteTime = state.whiteTime || 1 * 60 * 1000
+    let blackTime = state.blackTime || 1 * 60 * 1000
 
-    // Only deduct time from the current player (whose turn it is right now)
+    // Only deduct time from the current player
     if (currentPlayer === "w") {
       whiteTime = Math.max(0, whiteTime - elapsed)
     } else {
       blackTime = Math.max(0, blackTime - elapsed)
     }
 
-    // Check for timeout and end game if necessary
+    // Check for timeout
     if (whiteTime <= 0) {
       state.gameEnded = true
       state.endReason = "timeout"
@@ -583,6 +568,8 @@ export function getCurrentTimers(state, currentTimestamp) {
         winner: null,
         shouldNavigateToMenu: true,
         endTimestamp: currentTimestamp,
+        timeControl: "bullet",
+        increment: state.increment || 0,
       }
     }
 
@@ -602,6 +589,8 @@ export function getCurrentTimers(state, currentTimestamp) {
         winner: null,
         shouldNavigateToMenu: true,
         endTimestamp: currentTimestamp,
+        timeControl: "bullet",
+        increment: state.increment || 0,
       }
     }
 
@@ -610,14 +599,18 @@ export function getCurrentTimers(state, currentTimestamp) {
       black: blackTime,
       activeColor: currentPlayerColor,
       gameEnded: false,
+      timeControl: "bullet",
+      increment: state.increment || 0,
     }
   } catch (error) {
-    console.error("Error in getCurrentTimers:", error)
+    console.error("Error in bullet getCurrentTimers:", error)
     return {
-      white: state?.whiteTime || 600000,
-      black: state?.blackTime || 600000,
+      white: state?.whiteTime || 1 * 60 * 1000,
+      black: state?.blackTime || 1 * 60 * 1000,
       activeColor: state?.activeColor || "white",
       gameEnded: false,
+      timeControl: "bullet",
+      increment: state?.increment || 0,
       error: error.message,
     }
   }
@@ -627,7 +620,7 @@ export function getCurrentTimers(state, currentTimestamp) {
 export function getLegalMoves(fen) {
   try {
     if (!fen || typeof fen !== "string") {
-      console.error("[MOVES] Invalid FEN provided to getLegalMoves:", fen)
+      console.error("[BULLET MOVES] Invalid FEN provided to getLegalMoves:", fen)
       return []
     }
 
@@ -644,54 +637,54 @@ export function checkGameStatus(state, gameInstance) {
   try {
     // Validate input
     if (!state || typeof state !== "object") {
-      console.error("[STATUS] Invalid state provided to checkGameStatus")
+      console.error("[BULLET STATUS] Invalid state provided to checkGameStatus")
       return { result: "ongoing", error: "Invalid state" }
     }
 
-    // Always reconstruct game from FEN if not provided
+    // Reconstruct game from FEN if not provided
     let game = gameInstance
     if (!game) {
       if (!state.fen) {
-        console.error("[STATUS] Missing FEN in game state")
+        console.error("[BULLET STATUS] Missing FEN in game state")
         return { result: "ongoing", error: "Missing FEN" }
       }
       try {
         game = new Chess(state.fen)
       } catch (error) {
-        console.error("[STATUS] Error reconstructing game from FEN:", error)
+        console.error("[BULLET STATUS] Error reconstructing game from FEN:", error)
         return { result: "ongoing", error: "Invalid FEN" }
       }
     }
 
-    // Check for time-based wins first
+    // Check for time-based wins first (critical in bullet chess)
     if (state.whiteTime <= 0) return { result: "timeout", winnerColor: "black", reason: "white ran out of time" }
     if (state.blackTime <= 0) return { result: "timeout", winnerColor: "white", reason: "black ran out of time" }
 
-    // Check for checkmate - this automatically ends the game
+    // Check for checkmate
     if (game.isCheckmate()) {
       const winnerColor = game.turn() === "w" ? "black" : "white"
-      console.log(`CHECKMATE DETECTED: ${winnerColor} wins!`)
+      console.log(`BULLET CHECKMATE DETECTED: ${winnerColor} wins!`)
       return { result: "checkmate", winnerColor: winnerColor }
     }
 
     // Check for other draw conditions
-    if (game.isStalemate()) return { result: "draw", reason: "stalemate" }
-    if (game.isInsufficientMaterial()) return { result: "draw", reason: "insufficient material" }
-    if (game.isThreefoldRepetition()) return { result: "draw", reason: "threefold repetition" }
-    if (game.isDraw()) return { result: "draw", reason: "50-move rule" }
+    if (game.isStalemate()) return { result: "draw", reason: "stalemate", winnerColor: null }
+    if (game.isInsufficientMaterial()) return { result: "draw", reason: "insufficient material", winnerColor: null }
+    if (game.isThreefoldRepetition()) return { result: "draw", reason: "threefold repetition", winnerColor: null }
+    if (game.isDraw()) return { result: "draw", reason: "50-move rule", winnerColor: null }
 
     // Manual check for 5x / 75x repetition
     if (!(state.repetitionMap instanceof Map)) {
       state.repetitionMap = new Map(Object.entries(state.repetitionMap || {}))
     }
     const repetitionCount = state.repetitionMap.get(game.fen()) || 0
-    if (repetitionCount >= 5) return { result: "draw", reason: "fivefold repetition" }
-    if (state.moveHistory && state.moveHistory.length >= 150) return { result: "draw", reason: "75-move rule" }
+    if (repetitionCount >= 5) return { result: "draw", reason: "fivefold repetition", winnerColor: null }
+    if (state.moveHistory && state.moveHistory.length >= 150) return { result: "draw", reason: "75-move rule", winnerColor: null }
 
-    return { result: "ongoing" }
+    return { result: "ongoing", winnerColor: null }
   } catch (error) {
-    console.error("Error checking game status:", error)
-    return { result: "ongoing", error: error.message }
+    console.error("Error checking bullet game status:", error)
+    return { result: "ongoing", error: error.message, winnerColor: null }
   }
 }
 
@@ -700,23 +693,23 @@ export function updateRepetitionMap(state, gameInstance) {
   try {
     // Validate input
     if (!state || typeof state !== "object") {
-      console.error("[REPETITION] Invalid state provided to updateRepetitionMap")
+      console.error("[BULLET REPETITION] Invalid state provided to updateRepetitionMap")
       return
     }
 
-    // Defensive: reconstruct repetitionMap if missing
+    // Get FEN
     let fen
     if (gameInstance) {
       fen = gameInstance.fen()
     } else if (state.fen) {
       fen = state.fen
     } else {
-      console.error("[REPETITION] Missing FEN in game state")
+      console.error("[BULLET REPETITION] Missing FEN in game state")
       return
     }
 
     if (!fen || typeof fen !== "string") {
-      console.error("[REPETITION] Invalid FEN format:", fen)
+      console.error("[BULLET REPETITION] Invalid FEN format:", fen)
       return
     }
 
@@ -726,8 +719,8 @@ export function updateRepetitionMap(state, gameInstance) {
 
     const current = state.repetitionMap.get(fen) || 0
     state.repetitionMap.set(fen, current + 1)
-    console.log("Repetition map updated for FEN:", fen, "Count:", current + 1)
+    console.log("Bullet repetition map updated for FEN:", fen, "Count:", current + 1)
   } catch (error) {
-    console.error("Error updating repetition :", error)
+    console.error("Error updating bullet repetition map:", error)
   }
 }

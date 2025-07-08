@@ -59,7 +59,7 @@ export async function joinQueue({ userId, socketId, variant, subvariant , io}) {
 
     let rank;
     let ratingField;
-    if (variant === 'Classic') {
+    if (variant === 'classic') {
       // subvariant must be provided for Classic (either 'blitz' or 'bullet')
       if (!subvariant || (subvariant !== 'blitz' && subvariant !== 'bullet' && subvariant !== 'standard')) {
         console.error(`[joinQueue] Invalid or missing subvariant for Classic: ${subvariant}`);
@@ -168,7 +168,7 @@ async function tryMatch(userId, variant, io, byRank) {
     }
     
     let queue;
-    if (variant === 'Classic') {
+    if (variant === 'classic') {
       // Only match users with the same subvariant (blitz or bullet)
       if (!user.subvariant) {
         console.log(`[tryMatch] User ${userId} missing subvariant for Classic.`);
@@ -195,7 +195,7 @@ async function tryMatch(userId, variant, io, byRank) {
     console.log(`[tryMatch] Candidates after filtering out self for user ${userId}:`, queue);
     
     // For Classic, filter by subvariant and validate socket connections
-    if (variant === 'Classic') {
+    if (variant === 'classic') {
       const validQueue = [];
       for (const id of queue) {
         const other = await redisClient.hGetAll(userKey(id));
@@ -328,13 +328,13 @@ async function tryMatch(userId, variant, io, byRank) {
     const player1 = {
         userId: userDoc._id.toString(),
         username: userDoc.name,
-        rating: variant === 'Classic' ? userDoc.ratings?.classic?.[subvariant] : userDoc.ratings?.[getRatingField(variant)],
+        rating: variant === 'classic' ? userDoc.ratings?.classic?.[subvariant] : userDoc.ratings?.[getRatingField(variant)],
     }
 
     const player2 = {
         userId: matchDoc._id.toString(),
         username: matchDoc.name,
-        rating: variant === 'Classic' ? matchDoc.ratings?.classic?.[subvariant] : matchDoc.ratings?.[getRatingField(variant)],
+        rating: variant === 'classic' ? matchDoc.ratings?.classic?.[subvariant] : matchDoc.ratings?.[getRatingField(variant)],
     }
     const {sessionId, gameState} = await createGameSession(
       player1,
