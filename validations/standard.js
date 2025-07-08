@@ -728,6 +728,6 @@ export function updateRepetitionMap(state, gameInstance) {
     state.repetitionMap.set(fen, current + 1)
     console.log("Repetition map updated for FEN:", fen, "Count:", current + 1)
   } catch (error) {
-    console.error("Error updating repetition map:", error)
+    console.error("Error updating repetition :", error)
   }
 }
