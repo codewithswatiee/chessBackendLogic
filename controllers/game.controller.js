@@ -2,21 +2,72 @@ import Game from '../models/game.model.js';
 import { getLegalMoves as legalMovesBlitz, validateAndApplyMove as validateBlitz } from '../validations/classic/blitz.js';
 import { getLegalMoves as legalMovesBullet, validateAndApplyMove as validateBullet} from '../validations/classic/bullet.js';
 import { validateAndApplyMove as validateStandard, getLegalMoves as legalMovesStandard } from '../validations/classic/standard.js';
+import { getLegalMoves as legalMovesCzyStnd, validateAndApplyMove as validateCzyStd} from '../validations/crazyhouse/crazyhouseStandard.js';
+import { validateAndApplyMove as validateCzyTimer, getLegalMoves as legalMovesCzyTimer } from '../validations/crazyhouse/crazyhouseTimer.js';
+import { getDecayLegalMoves, validateAndApplyDecayMove } from '../validations/decay.js';
+import { getLegalMoves as legalMovesSixPointer, validateAndApplyMove as validateSixPointer } from '../validations/sixPointer.js';
 import { getSessionById, updateGameState } from './session.controller.js';
 
 // Make a move
 export async function makeMove({ sessionId, userId, move, timestamp, variant , subvariant  }) {
   const session = await getSessionById(sessionId);
   console.log("Making move:", move, "for user:", userId, "at timestamp:", timestamp);
-  if (!session) throw new Error('Session not found');
+  if (!session) return { type: 'game:warning', message: 'Session not found' };
   const { gameState } = session;
 
   console.log("Current game state:", gameState);
 
 
   const color = (gameState.players.white.userId === userId) ? 'white' : (gameState.players.black.userId === userId) ? 'black' : null;
-  if (!color) throw new Error('User not a player in this game');
-  if (gameState.status !== 'active') throw new Error('Game is not active');
+  if (!color) return { type: 'game:warning', message: 'User not a player in this game' };
+  if (gameState.status !== 'active') return { type: 'game:warning', message: 'Game is not active' };
+
+  // --- TIMER LOGIC START ---
+  const now = timestamp || Date.now();
+  const opponentColor = color === 'white' ? 'black' : 'white';
+
+  // Initialize timers if not present
+  if (!gameState.timers) {
+    gameState.timers = {
+      white: { remaining: 180000, lastUpdateTime: now, isRunning: true },
+      black: { remaining: 180000, lastUpdateTime: now, isRunning: false }
+    };
+  }
+
+  // Calculate elapsed time for the player who just moved
+  const elapsed = now - (gameState.timers[color].lastUpdateTime || now);
+  gameState.timers[color].remaining -= elapsed;
+  gameState.timers[color].lastUpdateTime = now;
+  gameState.timers[color].isRunning = false;
+
+  // Start opponent's timer
+  gameState.timers[opponentColor].isRunning = true;
+  gameState.timers[opponentColor].lastUpdateTime = now;
+
+  // If time runs out
+  if (gameState.timers[color].remaining <= 0) {
+    gameState.status = 'finished';
+    gameState.result = opponentColor;
+    gameState.resultReason = 'timeout';
+    gameState.winner = opponentColor;
+    gameState.endedAt = now;
+    await updateGameState(sessionId, gameState);
+    await Game.findOneAndUpdate(
+      { sessionId },
+      {
+        $set: {
+          moves: gameState.moves,
+          state: gameState.board,
+          winner: gameState.winner,
+          result: gameState.result,
+          endedAt: gameState.endedAt,
+        },
+      },
+      { upsert: true }
+    );
+    return { move: null, gameState };
+  }
+  // --- TIMER LOGIC END ---
 
   // Validate that the move is one of the possible moves
   const fen = gameState.board.fen;
@@ -28,13 +79,25 @@ export async function makeMove({ sessionId, userId, move, timestamp, variant , s
     possibleMoves = legalMovesBlitz(fen).filter(m => m.from === move.from);
   } else if(variant === 'classic' && subvariant === 'bullet') {
     possibleMoves = legalMovesBullet(fen).filter(m => m.from === move.from);
+  } else if(variant === 'sixpointer') {
+    possibleMoves = legalMovesSixPointer(fen).filter(m => m.from === move.from);
+  } else if(variant === 'decay') {
+    possibleMoves = getDecayLegalMoves(fen).filter(m => m.from === move.from); // Assuming decay uses standard moves for now
+  } else if (variant === 'crazyhouse' && subvariant === 'standard') {
+    possibleMoves = legalMovesCzyStnd(fen).filter(m => m.from === move.from);
+  } else if (variant === 'crazyhouse' && subvariant === 'withTimer') {
+    possibleMoves = legalMovesCzyTimer(fen).filter(m => m.from === move.from);
+  } else {
+    return { type: 'game:warning', message: 'Invalid variant or subvariant'};
   }
   
   console.log("Moves received:", move);
   console.log("Possible moves for square", move.from, ":", possibleMoves);
 
-  const isMoveLegal = possibleMoves.some(m => m.from === move.from && m.to === move.to && (!m.promotion || m.promotion === move.promotion));
-  if (!isMoveLegal) throw new Error('Move is not legal');
+  const isMoveLegal = possibleMoves && possibleMoves.some(m => m.from === move.from && m.to === move.to && (!m.promotion || m.promotion === move.promotion));
+  if (!isMoveLegal) {
+    return { type: 'game:warning', message: 'Move is not legal' };
+  }
 
   // Apply move
   let result;
@@ -44,9 +107,19 @@ export async function makeMove({ sessionId, userId, move, timestamp, variant , s
     result = validateBlitz(gameState.board, move, color, timestamp);
   } else if(variant === 'classic' && subvariant === 'bullet') {
     result = validateBullet(gameState.board, move, color, timestamp);
+  } else if(variant === 'sixpointer') {
+    result = validateSixPointer(gameState.board, move, color, timestamp);
+  } else if(variant === 'decay') {
+    result = validateAndApplyDecayMove(gameState.board, move, color, timestamp);
+  } else if (variant === 'crazyhouse' && subvariant === 'standard') {
+    result = validateCzyStd(gameState.board, move, color, timestamp);
+  } else if (variant === 'crazyhouse' && subvariant === 'withTimer') {
+    result = validateCzyTimer(gameState.board, move, color, timestamp);
   }
   console.log("Move result:", result);
-  if (!result.valid) throw new Error(result.reason || 'Invalid move');
+  if (!result.valid) {
+    return { type: 'game:warning', message: result.reason || 'Invalid move' };
+  }
 
   // Update game state
   gameState.board = result.state;
@@ -59,6 +132,9 @@ export async function makeMove({ sessionId, userId, move, timestamp, variant , s
   // Change activeColor to next player
   gameState.board.activeColor = (color === 'white') ? 'black' : 'white';
 
+  // Attach timers to board for frontend
+  gameState.board.timers = gameState.timers;
+
   // Check for game end
   if (result.result && result.result !== 'ongoing') {
     gameState.status = 'finished';
@@ -67,31 +143,32 @@ export async function makeMove({ sessionId, userId, move, timestamp, variant , s
     gameState.winner = result.winnerId || null;
     gameState.endedAt = Date.now();
     // Persist to MongoDB
-    await Game.findOneAndUpdate(
-      { sessionId },
-      {
-        $set: {
-          moves: gameState.moves,
-          state: gameState.board,
-          winner: gameState.winnerId,
-          result: gameState.result,
-          endedAt: gameState.endedAt,
-        },
-      },
-      { upsert: true }
-    );
+    // await Game.findOneAndUpdate(
+    //   { sessionId },
+    //   {
+    //     $set: {
+    //       moves: gameState.moves,
+    //       state: gameState.board,
+    //       winner: gameState.winnerId,
+    //       result: gameState.result,
+    //       endedAt: gameState.endedAt,
+    //     },
+    //   },
+    //   { upsert: true }
+    // );
   } else {
     // Update only moves and state
-    await Game.findOneAndUpdate(
-      { sessionId },
-      {
-        $set: {
-          moves: gameState.moves,
-          state: gameState.board,
-        },
-      },
-      { upsert: true }
-    );
+    // await Game.findOneAndUpdate(
+    //   { sessionId },
+    //   {
+    //     $set: {
+    //       moves: gameState.moves,
+    //       state: gameState.board,
+    //     },
+    //   },
+    //   { upsert: true }
+    // );
+    console.log("Game is still active, no end condition met");
   }
 
   await updateGameState(sessionId, gameState);
@@ -113,6 +190,16 @@ export async function getPossibleMoves({ sessionId, square, variant, subvariant 
     moves = legalMovesBlitz(fen).filter(m => m.from === square);
   } else if(variant === 'classic' && subvariant === 'bullet') {
     moves = legalMovesBullet(fen).filter(m => m.from === square);
+  } else if(variant === 'sixpointer') {
+    moves = legalMovesSixPointer(fen).filter(m => m.from === square);
+  } else if(variant === 'decay') {
+    moves = getDecayLegalMoves(fen).filter(m => m.from === square); //
+  } else if (variant === 'crazyhouse' && subvariant === 'standard') {
+    moves = legalMovesCzyStnd(fen).filter(m => m.from === square);
+  } else if (variant === 'crazyhouse' && subvariant === 'withTimer') {
+    moves = legalMovesCzyTimer(fen).filter(m => m.from === square);
+  } else {
+    throw new Error('Invalid variant or subvariant');
   }
   // const moves = legalMovesStandard(fen).filter(m => m.from === square);
   return moves;
@@ -133,17 +220,17 @@ export async function resign({ sessionId, userId }) {
   gameState.winner = winner;
   gameState.endedAt = Date.now();
   await updateGameState(sessionId, gameState);
-  await Game.findOneAndUpdate(
-    { sessionId },
-    {
-      $set: {
-        winner: gameState.winner,
-        result: gameState.result,
-        endedAt: gameState.endedAt,
-      },
-    },
-    { upsert: true }
-  );
+  // await Game.findOneAndUpdate(
+  //   { sessionId },
+  //   {
+  //     $set: {
+  //       winner: gameState.winner,
+  //       result: gameState.result,
+  //       endedAt: gameState.endedAt,
+  //     },
+  //   },
+  //   { upsert: true }
+  // );
   return { gameState };
 }
 
@@ -177,16 +264,16 @@ export async function acceptDraw({ sessionId, userId }) {
   gameState.winner = null;
   gameState.endedAt = Date.now();
   await updateGameState(sessionId, gameState);
-  await Game.findOneAndUpdate(
-    { sessionId },
-    {
-      $set: {
-        result: 'draw',
-        endedAt: gameState.endedAt,
-      },
-    },
-    { upsert: true }
-  );
+  // await Game.findOneAndUpdate(
+  //   { sessionId },
+  //   {
+  //     $set: {
+  //       result: 'draw',
+  //       endedAt: gameState.endedAt,
+  //     },
+  //   },
+  //   { upsert: true }
+  // );
   return { gameState };
 }
 

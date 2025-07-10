@@ -1,23 +1,5 @@
 import { Chess } from "chess.js"
 
-// Helper: Recursively convert BigInt values to Number for JSON serialization
-export function convertBigIntToNumber(obj) {
-  if (typeof obj === "bigint") {
-    return Number(obj)
-  } else if (Array.isArray(obj)) {
-    return obj.map(convertBigIntToNumber)
-  } else if (obj && typeof obj === "object") {
-    const newObj = {}
-    for (const key in obj) {
-      if (Object.prototype.hasOwnProperty.call(obj, key)) {
-        newObj[key] = convertBigIntToNumber(obj[key])
-      }
-    }
-    return newObj
-  }
-  return obj
-}
-
 // Helper: Validate ObjectId format
 export function isValidObjectId(id) {
   if (!id) return false
@@ -640,7 +622,13 @@ export function validateAndApplyDecayMove(state, move, playerColor, currentTimes
       frozenPieces: state.frozenPieces,
     }
 
+    console.log("Game state after move:", state.gameState)
+    console.log("Current decay timers:", state.decayTimers)
+    console.log("Frozen pieces:", state.frozenPieces)
+    
+
     console.log("=== DECAY MOVE VALIDATION END ===")
+
 
     return {
       valid: true,

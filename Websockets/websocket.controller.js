@@ -125,7 +125,12 @@ const websocketRoutes = (io) => {
     socket.on("game:makeMove", async ({ move, timestamp }) => {
       try {
         console.log("Received game:makeMove for user", userId, "session", sessionId, "move", move);
-        const { move: moveObj, gameState } = await makeMove({ sessionId, userId, move, timestamp, variant, subvariant });
+        const result = await makeMove({ sessionId, userId, move, timestamp, variant, subvariant });
+        if (result && result.type === 'game:warning') {
+          gameNamespace.to(sessionId).emit("game:warning", { message: result.message });
+          return;
+        }
+        const { move: moveObj, gameState } = result;
         // Always emit all game events to the whole session
         gameNamespace.to(sessionId).emit("game:move", { move: moveObj, gameState });
         gameNamespace.to(sessionId).emit("game:timer", { timers: gameState.board.whiteTime, black: gameState.board.blackTime });

@@ -5,7 +5,7 @@ import { createGameSession } from './session.controller.js';
 import gameModel from '../models/game.model.js';
 
 // Supported variants
-const VARIANTS = ['Crazyhouse with Timer', '6Pointer Chess', 'Decay Chess', 'Classic'];
+const VARIANTS = ['xrazyhouse', 'sixpointer', 'decay', 'classic'];
 
 // Cooldown in ms
 const REJOIN_COOLDOWN = 10 * 1000;
@@ -22,10 +22,10 @@ const cooldownKey = (userId) => `cooldown:${userId}`;
 // Helper: get rating field for variant
 function getRatingField(variant) {
   switch (variant) {
-    case 'Crazyhouse with Timer': return 'crazyhouse';
-    case 'Six Pointer': return 'sixPoint';
-    case 'Decay Chess': return 'decayChess';
-    case 'Classic': return 'classic';
+    case 'crazyhouse': return 'crazyhouse';
+    case 'sixpointer': return 'sixPoint';
+    case 'decay': return 'decayChess';
+    case 'classic': return 'classic';
     default: throw new Error('Unknown variant');
   }
 }
@@ -324,7 +324,7 @@ async function tryMatch(userId, variant, io, byRank) {
     console.log(user.subvariant)
     const subvariant = user.subvariant; 
 
-    console.log(userDoc.ratings?.classic?.[subvariant])
+    // console.log(userDoc.ratings?.classic?.[subvariant])
     const player1 = {
         userId: userDoc._id.toString(),
         username: userDoc.name,

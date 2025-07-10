@@ -6,6 +6,11 @@ import redisClient, {
 } from '../config/redis.config.js';
 import { createInitialState as createStandardInitialState, convertBigIntToNumber } from '../validations/classic/standard.js';
 import { createInitialState as createBlitzInitialState } from '../validations/classic/blitz.js';
+import { createInitialState as createBulletInitialState} from '../validations/classic/bullet.js';
+import { createInitialState as createSixPointerInitialState, generateRandomBalancedPosition } from '../validations/sixPointer.js';
+import { createDecayInitialState } from '../validations/decay.js';
+import { createInitialState as createCzyStndInitState} from '../validations/crazyhouse/crazyhouseStandard.js';
+import { createInitialState as createCzyTimerInitState } from '../validations/crazyhouse/crazyhouseTimer.js';
 
 // Game variants and their configurations
 const GAME_VARIANTS = {
@@ -29,6 +34,29 @@ const GAME_VARIANTS = {
         initialFen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
         timeControl: { base: 60 * 1000, increment: 0 }, // 1+0 (corrected from 1+1)
         description: 'Ultra-fast chess with 1 minute base, no increment'
+      }
+    }
+  },
+  sixpointer: {
+    name: '6-Point Chess',
+    description: 'A variant of chess where each player has 6 points worth of pieces, allowing for unique strategies and gameplay.',
+  },
+  decay:{
+    name: 'Decay Chess',
+    description: 'A variant of chess where pieces decay over time, adding a new layer of strategy.',
+  },
+  crazyhouse: {
+    name: 'Crazyhouse',
+    subvariants: {
+      standard: {
+        name: 'Standard',
+        timeControl: { base: 3 * 60 * 1000, increment: 2000 }, // 10 minutes
+        description: 'Crazyhouse chess with 3 minutes base + 2 second increment'
+      },
+      withTimer: {
+        name: 'Crazyhouse with Timer',
+        timeControl: { base: 3 * 60 * 1000, increment: 2000 }, // 3+2
+        description: 'Crazyhouse chess with 3 minutes base + 2 second increment'
       }
     }
   }
@@ -98,7 +126,7 @@ const validatePlayer = (player) => {
 
 const validateGameConfig = (variant, subvariant) => {
   if (!variant || !GAME_VARIANTS[variant]) return false;
-  if (!subvariant || !GAME_VARIANTS[variant].subvariants[subvariant]) return false;
+  if (variant === 'classic' && (!subvariant || !GAME_VARIANTS[variant].subvariants[subvariant])) return false;
   return true;
 };
 
@@ -125,6 +153,7 @@ function assignPlayerColors(player1, player2) {
  * Parse FEN string to extract board state components
  */
 function parseFen(fen) {
+  console.log('Parsing FEN:', fen);
   const parts = fen.split(' ');
   return {
     position: parts[0],
@@ -140,10 +169,13 @@ function parseFen(fen) {
  * Create initial game state with comprehensive chess rules
  */
 function createInitialGameState(variant, subvariant, whitePlayer, blackPlayer) {
-  const gameConfig = GAME_VARIANTS[variant].subvariants[subvariant];
-  const fenData = parseFen(gameConfig.initialFen);
+  const gameConfig = GAME_VARIANTS[variant].subvariants
+    ? GAME_VARIANTS[variant].subvariants[subvariant]
+    : GAME_VARIANTS[variant];
+  const fenData = parseFen(gameConfig.initialFen || ""); // fallback for sixPoint
   const now = Date.now();
-  const timeControl = gameConfig.timeControl;
+  const timeControl = gameConfig.timeControl || {};
+
   // Only for standard chess, use the logic from validations/standard.js
   if (variant === 'classic' && subvariant === 'standard') {
     const now = Date.now();
@@ -312,10 +344,418 @@ function createInitialGameState(variant, subvariant, whitePlayer, blackPlayer) {
         }
       }
     };
+  } else if (variant === 'classic' && subvariant === 'bullet') {
+    const now = Date.now();
+    const state = createBulletInitialState()
+
+    return {
+      board: state,
+      sessionId: null,
+      variantName: GAME_VARIANTS[variant].name,
+      subvariantName: GAME_VARIANTS[variant].subvariants[subvariant].name,
+      description: GAME_VARIANTS[variant].subvariants[subvariant].description,
+      players: {
+        white: {
+          userId: whitePlayer.userId,
+          username: whitePlayer.username,
+          rating: whitePlayer.rating,
+          avatar: whitePlayer.avatar || null,
+          title: whitePlayer.title || null
+        },
+        black: {
+          userId: blackPlayer.userId,
+          username: blackPlayer.username,
+          rating: blackPlayer.rating,
+          avatar: blackPlayer.avatar || null,
+          title: blackPlayer.title || null
+        }
+      },
+      timeControl: {
+        type: getTimeControlType(timeControl),
+        baseTime: timeControl.base,
+        increment: timeControl.increment,
+        timers: {
+          white: timeControl.base,
+          black: timeControl.base
+        },
+        timeSpent: {
+          white: [],
+          black: []
+        },
+        flagged: {
+          white: false,
+          black: false
+        }
+      },
+      status: 'active',
+      result: CHESS_CONSTANTS.GAME_RESULTS.ONGOING,
+      resultReason: null,
+      winner: null,
+      moves: [],
+      moveCount: 0,
+      lastMove: null,
+      gameState: {
+        check: false,
+        checkmate: false,
+        stalemate: false,
+        insufficientMaterial: false,
+        threefoldRepetition: false,
+        fiftyMoveRule: false
+      },
+      positionHistory: [gameConfig.initialFen],
+      createdAt: Number(now),
+      lastActivity: Number(now),
+      startedAt: Number(now),
+      endedAt: null,
+      rules: getChessRules(variant, subvariant),
+      metadata: {
+        source: 'matchmaking',
+        rated: true,
+        spectators: [],
+        allowSpectators: true,
+        drawOffers: {
+          white: false,
+          black: false
+        },
+        resignations: {
+          white: false,
+          black: false
+        },
+        premoves: {
+          white: null,
+          black: null
+        }
+      }
+    };
+  } else if (variant === 'sixpointer') {
+    // 6-Point Chess: 30 seconds per move, no base time
+    const sixPointerState = createSixPointerInitialState();
+    return {
+      board: sixPointerState,
+      sessionId: null,
+      variantName: GAME_VARIANTS[variant].name,
+      subvariantName: null,
+      description: "6-Point Chess: Each player gets 30 seconds per move, no base time.",
+      players: {
+        white: {
+          userId: whitePlayer.userId,
+          username: whitePlayer.username,
+          rating: whitePlayer.rating,
+          avatar: whitePlayer.avatar || null,
+          title: whitePlayer.title || null
+        },
+        black: {
+          userId: blackPlayer.userId,
+          username: blackPlayer.username,
+          rating: blackPlayer.rating,
+          avatar: blackPlayer.avatar || null,
+          title: blackPlayer.title || null
+        }
+      },
+      timeControl: {
+        type: "sixpointer",
+        baseTime: 0,
+        increment: 0,
+        perMove: 30000, // 30 seconds per move
+        timers: {
+          white: 30000,
+          black: 30000
+        },
+        timeSpent: {
+          white: [],
+          black: []
+        },
+        flagged: {
+          white: false,
+          black: false
+        }
+      },
+      status: 'active',
+      result: CHESS_CONSTANTS.GAME_RESULTS.ONGOING,
+      resultReason: null,
+      winner: null,
+      moves: [],
+      moveCount: 0,
+      lastMove: null,
+      gameState: {
+        check: false,
+        checkmate: false,
+        stalemate: false,
+        insufficientMaterial: false,
+        threefoldRepetition: false,
+        fiftyMoveRule: false
+      },
+      positionHistory: [sixPointerState.fen], // <-- Set to initial FEN for sixpointer
+      createdAt: Number(now),
+      lastActivity: Number(now),
+      startedAt: Number(now),
+      endedAt: null,
+      rules: getChessRules(variant, subvariant),
+      metadata: {
+        source: 'matchmaking',
+        rated: true,
+        spectators: [],
+        allowSpectators: true,
+        drawOffers: {
+          white: false,
+          black: false
+        },
+        resignations: {
+          white: false,
+          black: false
+        },
+        premoves: {
+          white: null,
+          black: null
+        }
+      }
+    };
+  } else if (variant === 'decay') {
+    const initialState = createDecayInitialState();
+    return {
+      board: initialState, // or a dedicated sixPointer initial state if you have one
+      sessionId: null,
+      variantName: GAME_VARIANTS[variant].name,
+      subvariantName: null,
+      description: "6-Point Chess: Each player gets 30 seconds per move, no base time.",
+      players: {
+        white: {
+          userId: whitePlayer.userId,
+          username: whitePlayer.username,
+          rating: whitePlayer.rating,
+          avatar: whitePlayer.avatar || null,
+          title: whitePlayer.title || null
+        },
+        black: {
+          userId: blackPlayer.userId,
+          username: blackPlayer.username,
+          rating: blackPlayer.rating,
+          avatar: blackPlayer.avatar || null,
+          title: blackPlayer.title || null
+        }
+      },
+      timeControl: {
+        type: "decay",
+        baseTime: 180000, // 3 minutes base time
+        increment: 2000, // 2 seconds increment
+        timers: {
+          white: 180000,
+          black: 180000
+        },
+        timeSpent: {
+          white: [],
+          black: []
+        },
+        flagged: {
+          white: false,
+          black: false
+        }
+      },
+      status: 'active',
+      result: CHESS_CONSTANTS.GAME_RESULTS.ONGOING,
+      resultReason: null,
+      winner: null,
+      moves: [],
+      moveCount: 0,
+      lastMove: null,
+      gameState: {
+        check: false,
+        checkmate: false,
+        stalemate: false,
+        insufficientMaterial: false,
+        threefoldRepetition: false,
+        fiftyMoveRule: false
+      },
+      positionHistory: [initialState.fen], // <-- Set to initial FEN for decay
+      createdAt: Number(now),
+      lastActivity: Number(now),
+      startedAt: Number(now),
+      endedAt: null,
+      rules: getChessRules(variant, subvariant),
+      metadata: {
+        source: 'matchmaking',
+        rated: true,
+        spectators: [],
+        allowSpectators: true,
+        drawOffers: {
+          white: false,
+          black: false
+        },
+        resignations: {
+          white: false,
+          black: false
+        },
+        premoves: {
+          white: null,
+          black: null
+        }
+      }
+    };
+  } else if (variant === 'crazyhouse' && subvariant === 'standard') {
+    const initialState = createCzyStndInitState();
+    return {
+      board: initialState, // or a dedicated sixPointer initial state if you have one
+      sessionId: null,
+      variantName: GAME_VARIANTS[variant].name,
+      subvariantName: null,
+      description: "6-Point Chess: Each player gets 30 seconds per move, no base time.",
+      players: {
+        white: {
+          userId: whitePlayer.userId,
+          username: whitePlayer.username,
+          rating: whitePlayer.rating,
+          avatar: whitePlayer.avatar || null,
+          title: whitePlayer.title || null
+        },
+        black: {
+          userId: blackPlayer.userId,
+          username: blackPlayer.username,
+          rating: blackPlayer.rating,
+          avatar: blackPlayer.avatar || null,
+          title: blackPlayer.title || null
+        }
+      },
+      timeControl: {
+        type: "crazyhouse standard",
+        baseTime: 180000, // 3 minutes base time
+        increment: 2000, // 2 seconds increment
+        timers: {
+          white: 180000,
+          black: 180000
+        },
+        timeSpent: {
+          white: [],
+          black: []
+        },
+        flagged: {
+          white: false,
+          black: false
+        }
+      },
+      status: 'active',
+      result: CHESS_CONSTANTS.GAME_RESULTS.ONGOING,
+      resultReason: null,
+      winner: null,
+      moves: [],
+      moveCount: 0,
+      lastMove: null,
+      gameState: {
+        check: false,
+        checkmate: false,
+        stalemate: false,
+        insufficientMaterial: false,
+        threefoldRepetition: false,
+        fiftyMoveRule: false
+      },
+      positionHistory: [initialState.fen], // <-- Set to initial FEN for decay
+      createdAt: Number(now),
+      lastActivity: Number(now),
+      startedAt: Number(now),
+      endedAt: null,
+      rules: getChessRules(variant, subvariant),
+      metadata: {
+        source: 'matchmaking',
+        rated: true,
+        spectators: [],
+        allowSpectators: true,
+        drawOffers: {
+          white: false,
+          black: false
+        },
+        resignations: {
+          white: false,
+          black: false
+        },
+        premoves: {
+          white: null,
+          black: null
+        }
+      }
+    };
+  } else if (variant === 'crazyhouse' && subvariant === 'withTimer') {
+    const initialState = createCzyTimerInitState();
+    return {
+      board: initialState, // or a dedicated sixPointer initial state if you have one
+      sessionId: null,
+      variantName: GAME_VARIANTS[variant].name,
+      subvariantName: null,
+      description: "6-Point Chess: Each player gets 30 seconds per move, no base time.",
+      players: {
+        white: {
+          userId: whitePlayer.userId,
+          username: whitePlayer.username,
+          rating: whitePlayer.rating,
+          avatar: whitePlayer.avatar || null,
+          title: whitePlayer.title || null
+        },
+        black: {
+          userId: blackPlayer.userId,
+          username: blackPlayer.username,
+          rating: blackPlayer.rating,
+          avatar: blackPlayer.avatar || null,
+          title: blackPlayer.title || null
+        }
+      },
+      timeControl: {
+        type: "crazyhouse with Timer",
+        baseTime: 180000, // 3 minutes base time
+        increment: 2000, // 2 seconds increment
+        timers: {
+          white: 180000,
+          black: 180000
+        },
+        timeSpent: {
+          white: [],
+          black: []
+        },
+        flagged: {
+          white: false,
+          black: false
+        }
+      },
+      status: 'active',
+      result: CHESS_CONSTANTS.GAME_RESULTS.ONGOING,
+      resultReason: null,
+      winner: null,
+      moves: [],
+      moveCount: 0,
+      lastMove: null,
+      gameState: {
+        check: false,
+        checkmate: false,
+        stalemate: false,
+        insufficientMaterial: false,
+        threefoldRepetition: false,
+        fiftyMoveRule: false
+      },
+      positionHistory: [initialState.fen], // <-- Set to initial FEN for decay
+      createdAt: Number(now),
+      lastActivity: Number(now),
+      startedAt: Number(now),
+      endedAt: null,
+      rules: getChessRules(variant, subvariant),
+      metadata: {
+        source: 'matchmaking',
+        rated: true,
+        spectators: [],
+        allowSpectators: true,
+        drawOffers: {
+          white: false,
+          black: false
+        },
+        resignations: {
+          white: false,
+          black: false
+        },
+        premoves: {
+          white: null,
+          black: null
+        }
+      }
+    };
   }
   // Fallback to previous logic for other variant
   return {
-    // ...existing code for non-standard variants...
     sessionId: null,
     variantName: GAME_VARIANTS[variant].name,
     subvariantName: gameConfig.name,
