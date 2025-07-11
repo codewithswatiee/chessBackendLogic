@@ -1100,6 +1100,10 @@ export async function createGameSession(player1, player2, variant, subvariant, c
       variant: `${variant}/${subvariant}`,
       timeControl: `${gameState.timeControl.baseTime/60000}+${gameState.timeControl.increment/1000}`
     });
+
+    // const updateGameData = await gameModel.findOneAndUpdate(
+
+    // )
     
     // Return session data for frontend
     return {

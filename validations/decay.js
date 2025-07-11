@@ -4,7 +4,6 @@ import { Chess } from "chess.js"
 export function isValidObjectId(id) {
   if (!id) return false
   if (typeof id !== "string") return false
-  // MongoDB ObjectId is 24 characters hex string
   return /^[0-9a-fA-F]{24}$/.test(id)
 }
 
@@ -126,6 +125,7 @@ export function createDecayInitialState() {
     const game = new Chess() // default position
     const fen = game.fen()
     const [position, activeColor, castlingRights, enPassantSquare, halfmoveClock, fullmoveNumber] = fen.split(" ")
+
     const now = Date.now()
 
     return {
@@ -152,53 +152,44 @@ export function createDecayInitialState() {
       endReason: null,
       winner: null,
       endTimestamp: null,
-
-      // Decay-specific fields
+      // Decay-specific fields - simplified structure
       decayActive: false, // Becomes true when first queen is moved
-      decayTimers: {
+      queenDecayTimers: {
         white: {
-          queen: {
-            active: false,
-            timeRemaining: 0,
-            moveCount: 0,
-            frozen: false,
-            startTimestamp: null,
-            lastUpdateTimestamp: null,
-          },
-          majorPiece: {
-            active: false,
-            timeRemaining: 0,
-            moveCount: 0,
-            frozen: false,
-            startTimestamp: null,
-            lastUpdateTimestamp: null,
-            pieceType: null, // 'rook', 'bishop', 'knight'
-            pieceSquare: null, // to track which specific piece
-          },
+          active: false,
+          timeRemaining: 0,
+          moveCount: 0,
+          frozen: false,
+          square: null,
         },
         black: {
-          queen: {
-            active: false,
-            timeRemaining: 0,
-            moveCount: 0,
-            frozen: false,
-            startTimestamp: null,
-            lastUpdateTimestamp: null,
-          },
-          majorPiece: {
-            active: false,
-            timeRemaining: 0,
-            moveCount: 0,
-            frozen: false,
-            startTimestamp: null,
-            lastUpdateTimestamp: null,
-            pieceType: null,
-            pieceSquare: null,
-          },
+          active: false,
+          timeRemaining: 0,
+          moveCount: 0,
+          frozen: false,
+          square: null,
+        },
+      },
+      majorPieceDecayTimers: {
+        white: {
+          active: false,
+          timeRemaining: 0,
+          moveCount: 0,
+          frozen: false,
+          pieceType: null,
+          square: null,
+        },
+        black: {
+          active: false,
+          timeRemaining: 0,
+          moveCount: 0,
+          frozen: false,
+          pieceType: null,
+          square: null,
         },
       },
       frozenPieces: {
-        white: [], // Array of frozen piece positions
+        white: [], // Array of frozen piece squares
         black: [],
       },
     }
@@ -208,70 +199,74 @@ export function createDecayInitialState() {
   }
 }
 
+// Constants for decay timers
+const QUEEN_INITIAL_DECAY_TIME = 25000 // 25 seconds
+const MAJOR_PIECE_INITIAL_DECAY_TIME = 20000 // 20 seconds
+const DECAY_TIME_INCREMENT = 2000 // +2 seconds per move
+
 // Check if a piece is a major piece (for decay timer after queen freezes)
 function isMajorPiece(pieceType) {
   return ["r", "n", "b"].includes(pieceType.toLowerCase())
 }
 
-// Update decay timers based on current timestamp
+// Check if a piece is a queen
+function isQueen(pieceType) {
+  return pieceType.toLowerCase() === "q"
+}
+
+// Update decay timers based on current timestamp - ONLY during player's turn
 function updateDecayTimers(state, currentTimestamp) {
   if (!state.decayActive) return
 
-  const colors = ["white", "black"]
+  // Determine whose turn it is
+  let game
+  try {
+    game = new Chess(state.fen)
+  } catch (e) {
+    return
+  }
 
-  colors.forEach((color) => {
-    // Update queen decay timer
-    const queenTimer = state.decayTimers[color].queen
-    if (queenTimer.active && !queenTimer.frozen) {
-      const elapsed = currentTimestamp - queenTimer.lastUpdateTimestamp
-      queenTimer.timeRemaining = Math.max(0, queenTimer.timeRemaining - elapsed)
-      queenTimer.lastUpdateTimestamp = currentTimestamp
+  const turn = game.turn() // 'w' or 'b'
+  const color = turn === "w" ? "white" : "black"
 
-      // Check if queen timer expired
-      if (queenTimer.timeRemaining <= 0) {
-        queenTimer.frozen = true
-        queenTimer.active = false
-        state.frozenPieces[color].push("queen")
-        console.log(`${color} queen frozen due to decay timer expiration`)
+  // Only update decay timers for the player whose turn it is
+  const queenTimer = state.queenDecayTimers[color]
+  if (queenTimer.active && !queenTimer.frozen) {
+    const elapsed = currentTimestamp - state.turnStartTimestamp
+    queenTimer.timeRemaining = Math.max(0, queenTimer.timeRemaining - elapsed)
+
+    if (queenTimer.timeRemaining <= 0) {
+      queenTimer.frozen = true
+      queenTimer.active = false
+      if (queenTimer.square) {
+        state.frozenPieces[color].push(queenTimer.square)
       }
+      console.log(`${color} queen frozen due to decay timer expiration`)
     }
+  }
 
-    // Update major piece decay timer
-    const majorTimer = state.decayTimers[color].majorPiece
-    if (majorTimer.active && !majorTimer.frozen) {
-      const elapsed = currentTimestamp - majorTimer.lastUpdateTimestamp
-      majorTimer.timeRemaining = Math.max(0, majorTimer.timeRemaining - elapsed)
-      majorTimer.lastUpdateTimestamp = currentTimestamp
+  // Update major piece decay timer
+  const majorTimer = state.majorPieceDecayTimers[color]
+  if (majorTimer.active && !majorTimer.frozen) {
+    const elapsed = currentTimestamp - state.turnStartTimestamp
+    majorTimer.timeRemaining = Math.max(0, majorTimer.timeRemaining - elapsed)
 
-      // Check if major piece timer expired
-      if (majorTimer.timeRemaining <= 0) {
-        majorTimer.frozen = true
-        majorTimer.active = false
-        if (majorTimer.pieceSquare) {
-          state.frozenPieces[color].push(majorTimer.pieceSquare)
-        }
-        console.log(
-          `${color} ${majorTimer.pieceType} at ${majorTimer.pieceSquare} frozen due to decay timer expiration`,
-        )
+    if (majorTimer.timeRemaining <= 0) {
+      majorTimer.frozen = true
+      majorTimer.active = false
+      if (majorTimer.square) {
+        state.frozenPieces[color].push(majorTimer.square)
       }
+      console.log(`${color} ${majorTimer.pieceType} at ${majorTimer.square} frozen due to decay timer expiration`)
     }
-  })
+  }
 }
 
 // Check if a move involves a frozen piece
 function isMovingFrozenPiece(state, move, playerColor) {
   const frozenPieces = state.frozenPieces[playerColor]
 
-  // Check if moving a frozen queen
-  if (frozenPieces.includes("queen")) {
-    const game = new Chess(state.fen)
-    const piece = game.get(move.from)
-    if (piece && piece.type === "q" && piece.color === (playerColor === "white" ? "w" : "b")) {
-      return { frozen: true, reason: "Queen is frozen due to decay timer expiration" }
-    }
-  }
-
-  // Check if moving a frozen major piece
+  // Check if moving from a frozen square
   if (frozenPieces.includes(move.from)) {
     return { frozen: true, reason: "This piece is frozen due to decay timer expiration" }
   }
@@ -279,11 +274,10 @@ function isMovingFrozenPiece(state, move, playerColor) {
   return { frozen: false }
 }
 
-// Handle decay timer logic for a move
+// Handle decay timer logic for a move - CORE REQUIREMENT IMPLEMENTATION
 function handleDecayMove(state, move, playerColor, currentTimestamp) {
   const game = new Chess(state.fen)
   const piece = game.get(move.from)
-
   if (!piece) return
 
   const color = playerColor
@@ -293,80 +287,70 @@ function handleDecayMove(state, move, playerColor, currentTimestamp) {
   // Only handle moves by the current player
   if (pieceColor !== color) return
 
-  // Handle queen moves
-  if (pieceType === "q") {
-    const queenTimer = state.decayTimers[color].queen
+  // Handle queen moves - CORE REQUIREMENT
+  if (isQueen(pieceType)) {
+    const queenTimer = state.queenDecayTimers[color]
 
     if (!state.decayActive) {
-      // First queen move in the game - activate decay system
       state.decayActive = true
       console.log("Decay system activated - first queen move detected")
     }
 
     if (!queenTimer.active && !queenTimer.frozen) {
-      // First time moving this queen
       queenTimer.active = true
-      queenTimer.timeRemaining = 25000 // 25 seconds
+      queenTimer.timeRemaining = QUEEN_INITIAL_DECAY_TIME
       queenTimer.moveCount = 1
-      queenTimer.startTimestamp = currentTimestamp
-      queenTimer.lastUpdateTimestamp = currentTimestamp
+      queenTimer.square = move.to
       console.log(`${color} queen decay timer started: 25 seconds`)
     } else if (queenTimer.active && !queenTimer.frozen) {
-      // Subsequent queen moves - add 2 seconds
+      // Only increment by 2 seconds per move, never above 25s
       queenTimer.moveCount++
-      queenTimer.timeRemaining += 2000
-      queenTimer.lastUpdateTimestamp = currentTimestamp
+      queenTimer.timeRemaining = Math.min(
+        queenTimer.timeRemaining + DECAY_TIME_INCREMENT, // always +2s
+        QUEEN_INITIAL_DECAY_TIME
+      )
+      queenTimer.square = move.to
       console.log(
-        `${color} queen move #${queenTimer.moveCount}: +2 seconds added, total: ${queenTimer.timeRemaining}ms`,
+        `${color} queen move #${queenTimer.moveCount}: +2 seconds added, total: ${queenTimer.timeRemaining}ms (max 25000ms)`
       )
     }
   }
+  // Handle major piece moves - CORE REQUIREMENT
+  else if (isMajorPiece(pieceType)) {
+    const queenTimer = state.queenDecayTimers[color]
+    const majorTimer = state.majorPieceDecayTimers[color]
 
-  // Handle major piece moves (only if queen is frozen)
-  else if (isMajorPiece(pieceType) && state.decayTimers[color].queen.frozen) {
-    const majorTimer = state.decayTimers[color].majorPiece
-
-    if (!majorTimer.active && !majorTimer.frozen) {
-      // First major piece move after queen is frozen
+    if (queenTimer.frozen && !majorTimer.active && !majorTimer.frozen) {
       majorTimer.active = true
-      majorTimer.timeRemaining = 20000 // 20 seconds
+      majorTimer.timeRemaining = MAJOR_PIECE_INITIAL_DECAY_TIME
       majorTimer.moveCount = 1
       majorTimer.pieceType = pieceType
-      majorTimer.pieceSquare = move.to // Track where the piece moved to
-      majorTimer.startTimestamp = currentTimestamp
-      majorTimer.lastUpdateTimestamp = currentTimestamp
-      console.log(`${color} ${pieceType} decay timer started: 20 seconds`)
-    } else if (majorTimer.active && !majorTimer.frozen && majorTimer.pieceSquare === move.from) {
-      // Moving the same major piece that has the timer
+      majorTimer.square = move.to
+      console.log(`${color} ${pieceType} decay timer started: 20 seconds (queen is frozen)`)
+    } else if (majorTimer.active && !majorTimer.frozen && majorTimer.square === move.from) {
+      // Only increment by 2 seconds per move, never above 20s
       majorTimer.moveCount++
-      majorTimer.timeRemaining += 2000
-      majorTimer.pieceSquare = move.to // Update position
-      majorTimer.lastUpdateTimestamp = currentTimestamp
+      majorTimer.timeRemaining = Math.min(
+        majorTimer.timeRemaining + DECAY_TIME_INCREMENT, // always +2s
+        MAJOR_PIECE_INITIAL_DECAY_TIME
+      )
+      majorTimer.square = move.to
       console.log(
-        `${color} ${pieceType} move #${majorTimer.moveCount}: +2 seconds added, total: ${majorTimer.timeRemaining}ms`,
+        `${color} ${pieceType} move #${majorTimer.moveCount}: +2 seconds added, total: ${majorTimer.timeRemaining}ms (max 20000ms)`
       )
     }
   }
 }
 
-// Validate a move and apply decay rules
+// Validate a move and apply decay rules - REFACTORED FOR CLARITY
 export function validateAndApplyDecayMove(state, move, playerColor, currentTimestamp) {
   try {
     console.log("=== DECAY MOVE VALIDATION START ===")
     console.log("Move:", move, "Player:", playerColor)
-    console.log("Decay active:", state.decayActive)
 
-    // Validate input parameters
-    if (!state || typeof state !== "object") {
-      return { valid: false, reason: "Invalid game state", code: "INVALID_STATE" }
-    }
-
-    if (!move || typeof move !== "object" || !move.from || !move.to) {
-      return { valid: false, reason: "Invalid move format", code: "INVALID_MOVE" }
-    }
-
-    if (!playerColor || (playerColor !== "white" && playerColor !== "black")) {
-      return { valid: false, reason: "Invalid player color", code: "INVALID_PLAYER" }
+    // Input validation
+    if (!validateInputs(state, move, playerColor)) {
+      return { valid: false, reason: "Invalid input parameters", code: "INVALID_INPUT" }
     }
 
     if (!currentTimestamp || typeof currentTimestamp !== "number") {
@@ -384,6 +368,15 @@ export function validateAndApplyDecayMove(state, move, playerColor, currentTimes
       }
     }
 
+    // Initialize state if needed
+    initializeStateDefaults(state, currentTimestamp)
+
+    // Check for timeout before processing move
+    const timeoutResult = checkForTimeout(state, currentTimestamp)
+    if (timeoutResult.gameEnded) {
+      return timeoutResult
+    }
+
     // Update decay timers before processing move
     updateDecayTimers(state, currentTimestamp)
 
@@ -397,251 +390,29 @@ export function validateAndApplyDecayMove(state, move, playerColor, currentTimes
       }
     }
 
-    // Reconstruct game from FEN
-    let game
-    if (state.fen) {
-      try {
-        game = new Chess(state.fen)
-        state.game = game
-      } catch (error) {
-        console.error("Error reconstructing game from FEN:", error)
-        return { valid: false, reason: "Invalid game state", code: "INVALID_FEN" }
-      }
-    } else {
-      return { valid: false, reason: "Invalid state: missing FEN", code: "MISSING_FEN" }
+    // Validate the chess move
+    const moveResult = validateChessMove(state, move, playerColor, currentTimestamp)
+    if (!moveResult.valid) {
+      return moveResult
     }
 
-    // Initialize timer values if missing
-    if (typeof state.turnStartTimestamp !== "number") state.turnStartTimestamp = currentTimestamp
-    if (typeof state.lastMoveTimestamp !== "number") state.lastMoveTimestamp = currentTimestamp
-    if (typeof state.whiteTime !== "number") state.whiteTime = 180000
-    if (typeof state.blackTime !== "number") state.blackTime = 180000
-    if (!state.moveHistory) state.moveHistory = []
-    if (typeof state.gameStarted !== "boolean") state.gameStarted = false
-    if (!state.firstMoveTimestamp) state.firstMoveTimestamp = null
-    if (!state.capturedPieces) state.capturedPieces = { white: [], black: [] }
-    if (typeof state.gameEnded !== "boolean") state.gameEnded = false
-
-    // Check for time-based game ending BEFORE processing the move
-    if (state.whiteTime <= 0) {
-      state.gameEnded = true
-      state.endReason = "timeout"
-      state.winnerColor = "black"
-      state.winner = null
-      state.endTimestamp = currentTimestamp
-      return {
-        valid: false,
-        reason: "White ran out of time",
-        result: "timeout",
-        winnerColor: "black",
-        gameEnded: true,
-        endReason: "timeout",
-        shouldNavigateToMenu: true,
-        endTimestamp: currentTimestamp,
-        code: "WHITE_TIMEOUT",
-      }
-    }
-
-    if (state.blackTime <= 0) {
-      state.gameEnded = true
-      state.endReason = "timeout"
-      state.winnerColor = "white"
-      state.winner = null
-      state.endTimestamp = currentTimestamp
-      return {
-        valid: false,
-        reason: "Black ran out of time",
-        result: "timeout",
-        winnerColor: "white",
-        gameEnded: true,
-        endReason: "timeout",
-        shouldNavigateToMenu: true,
-        endTimestamp: currentTimestamp,
-        code: "BLACK_TIMEOUT",
-      }
-    }
-
-    // Get current player before move
-    const currentPlayerBeforeMove = game.turn() // 'w' or 'b'
-    const currentPlayerColor = currentPlayerBeforeMove === "w" ? "white" : "black"
-
-    // Verify that the player making the move matches the current turn
-    if (currentPlayerColor !== playerColor) {
-      return { valid: false, reason: "Not your turn", code: "WRONG_TURN" }
-    }
-
-    // Handle first move specially
-    if (!state.gameStarted || state.moveHistory.length === 0) {
-      console.log("FIRST MOVE DETECTED - Starting game timers")
-      state.gameStarted = true
-      state.firstMoveTimestamp = currentTimestamp
-      state.turnStartTimestamp = currentTimestamp
-      state.lastMoveTimestamp = currentTimestamp
-    } else {
-      // Calculate elapsed time and deduct from current player
-      const elapsed = currentTimestamp - state.turnStartTimestamp
-
-      if (currentPlayerBeforeMove === "w") {
-        const newWhiteTime = Math.max(0, state.whiteTime - elapsed)
-        state.whiteTime = newWhiteTime
-        if (state.whiteTime <= 0) {
-          state.gameEnded = true
-          state.endReason = "timeout"
-          state.winnerColor = "black"
-          state.winner = null
-          state.endTimestamp = currentTimestamp
-          return {
-            valid: false,
-            reason: "Time out",
-            result: "timeout",
-            winnerColor: "black",
-            gameEnded: true,
-            endReason: "timeout",
-            shouldNavigateToMenu: true,
-            endTimestamp: currentTimestamp,
-            code: "WHITE_TIMEOUT_DURING_MOVE",
-          }
-        }
-      } else {
-        const newBlackTime = Math.max(0, state.blackTime - elapsed)
-        state.blackTime = newBlackTime
-        if (state.blackTime <= 0) {
-          state.gameEnded = true
-          state.endReason = "timeout"
-          state.winnerColor = "white"
-          state.winner = null
-          state.endTimestamp = currentTimestamp
-          return {
-            valid: false,
-            reason: "Time out",
-            result: "timeout",
-            winnerColor: "white",
-            gameEnded: true,
-            endReason: "timeout",
-            shouldNavigateToMenu: true,
-            endTimestamp: currentTimestamp,
-            code: "BLACK_TIMEOUT_DURING_MOVE",
-          }
-        }
-      }
-    }
-
-    // Check for captured piece
-    const targetSquare = move.to
-    const capturedPiece = game.get(targetSquare)
-
-    // Validate and apply the move
-    let result
-    try {
-      result = game.move(move)
-    } catch (error) {
-      console.error("Chess.js move error:", error)
-      return { valid: false, reason: "Invalid move", code: "CHESS_JS_ERROR", details: error.message }
-    }
-
-    if (!result) return { valid: false, reason: "Illegal move", code: "ILLEGAL_MOVE" }
-
-    // Handle decay logic for this move
+    // Apply decay logic for this move
     handleDecayMove(state, move, playerColor, currentTimestamp)
 
-    // Track captured pieces
-    if (capturedPiece) {
-      const capturingPlayer = currentPlayerBeforeMove === "w" ? "white" : "black"
-      state.capturedPieces[capturingPlayer].push(capturedPiece.type)
-      console.log(`${capturingPlayer} captured ${capturedPiece.type}`)
+    // Update game state after successful move
+    updateGameStateAfterMove(state, moveResult, currentTimestamp)
+
+    // Check game status
+    const gameStatus = checkDecayGameStatus(state, moveResult.game)
+    if (gameStatus.result !== "ongoing") {
+      finalizeGameEnd(state, gameStatus, currentTimestamp)
     }
 
-    // Update state after successful move
-    const oldFen = state.fen
-    state.fen = game.fen()
-    state.lastMoveTimestamp = currentTimestamp
-
-    // Add increment to the player who just moved (3+2 time control)
-    if (currentPlayerBeforeMove === "w") {
-      state.whiteTime += state.increment
-    } else {
-      state.blackTime += state.increment
-    }
-
-    // Reset turn start timestamp for the NEXT player's turn
-    state.turnStartTimestamp = currentTimestamp
-    state.moveHistory.push(result)
-
-    // Update the active color
-    const newActivePlayer = game.turn()
-    state.activeColor = newActivePlayer === "w" ? "white" : "black"
-
-    console.log("Move completed:")
-    console.log("- FEN changed from:", oldFen.split(" ")[0], "to:", state.fen.split(" ")[0])
-    console.log("- Next player's turn:", newActivePlayer, "Active color:", state.activeColor)
-    console.log("- Final times - White:", state.whiteTime, "Black:", state.blackTime)
-
-    // Update repetition tracking
-    updateRepetitionMap(state, game)
-    const resultStatus = checkDecayGameStatus(state, game)
-
-    // Check if the game has ended
-    if (resultStatus.result !== "ongoing") {
-      state.gameEnded = true
-      state.endReason = resultStatus.result
-      state.winnerColor = resultStatus.winnerColor || null
-      state.endTimestamp = currentTimestamp
-      resultStatus.shouldNavigateToMenu = true
-      resultStatus.endTimestamp = currentTimestamp
-      resultStatus.winnerColor = state.winnerColor
-    }
-
-    // Remove Chess instance before returning
+    // Clean up and return result
     if (state.game) delete state.game
 
-    // Add detailed game state info
-    state.gameState = {
-      check: game.inCheck ? game.inCheck() : false,
-      checkmate: game.isCheckmate(),
-      stalemate: game.isStalemate(),
-      insufficientMaterial: game.isInsufficientMaterial(),
-      threefoldRepetition: game.isThreefoldRepetition(),
-      fiftyMoveRule: game.isDraw(),
-      lastMove: result,
-      result: resultStatus.result,
-      winner:
-        resultStatus.winnerColor && state.players && state.players[resultStatus.winnerColor]
-          ? state.players[resultStatus.winnerColor].username
-          : null,
-      winnerId:
-        resultStatus.winnerColor && state.players && state.players[resultStatus.winnerColor]
-          ? state.players[resultStatus.winnerColor]._id || null
-          : null,
-      drawReason: resultStatus.reason || null,
-      gameEnded: state.gameEnded,
-      endReason: state.endReason,
-      endTimestamp: state.endTimestamp,
-      // Decay-specific state
-      decayActive: state.decayActive,
-      decayTimers: state.decayTimers,
-      frozenPieces: state.frozenPieces,
-    }
-
-    console.log("Game state after move:", state.gameState)
-    console.log("Current decay timers:", state.decayTimers)
-    console.log("Frozen pieces:", state.frozenPieces)
-    
-
     console.log("=== DECAY MOVE VALIDATION END ===")
-
-
-    return {
-      valid: true,
-      move: result,
-      state,
-      gameEnded: state.gameEnded,
-      endReason: state.endReason,
-      endTimestamp: state.endTimestamp,
-      code: "SUCCESS",
-      winnerColor: state.winnerColor,
-      winner: state.winner,
-      ...resultStatus,
-    }
+    return createMoveResult(state, moveResult, gameStatus)
   } catch (error) {
     console.error("Error in validateAndApplyDecayMove:", error)
     return {
@@ -649,12 +420,221 @@ export function validateAndApplyDecayMove(state, move, playerColor, currentTimes
       reason: "Internal error during move validation",
       error: error.message,
       code: "INTERNAL_ERROR",
-      stack: error.stack,
     }
   }
 }
 
-// Get current timer values including decay timers
+// Helper functions for better organization
+function validateInputs(state, move, playerColor) {
+  if (!state || typeof state !== "object") return false
+  if (!move || typeof move !== "object" || !move.from || !move.to) return false
+  if (!playerColor || (playerColor !== "white" && playerColor !== "black")) return false
+  return true
+}
+
+function initializeStateDefaults(state, currentTimestamp) {
+  if (typeof state.turnStartTimestamp !== "number") state.turnStartTimestamp = currentTimestamp
+  if (typeof state.lastMoveTimestamp !== "number") state.lastMoveTimestamp = currentTimestamp
+  if (typeof state.whiteTime !== "number") state.whiteTime = 180000
+  if (typeof state.blackTime !== "number") state.blackTime = 180000
+  if (!state.moveHistory) state.moveHistory = []
+  if (typeof state.gameStarted !== "boolean") state.gameStarted = false
+  if (!state.firstMoveTimestamp) state.firstMoveTimestamp = null
+  if (!state.capturedPieces) state.capturedPieces = { white: [], black: [] }
+  if (typeof state.gameEnded !== "boolean") state.gameEnded = false
+}
+
+function checkForTimeout(state, currentTimestamp) {
+  if (state.whiteTime <= 0) {
+    return createTimeoutResult(state, "black", "White ran out of time", currentTimestamp)
+  }
+  if (state.blackTime <= 0) {
+    return createTimeoutResult(state, "white", "Black ran out of time", currentTimestamp)
+  }
+  return { gameEnded: false }
+}
+
+function createTimeoutResult(state, winner, reason, currentTimestamp) {
+  state.gameEnded = true
+  state.endReason = "timeout"
+  state.winnerColor = winner
+  state.winner = null
+  state.endTimestamp = currentTimestamp
+
+  return {
+    valid: false,
+    reason: reason,
+    result: "timeout",
+    winnerColor: winner,
+    gameEnded: true,
+    endReason: "timeout",
+    shouldNavigateToMenu: true,
+    endTimestamp: currentTimestamp,
+    code: "TIMEOUT",
+  }
+}
+
+function validateChessMove(state, move, playerColor, currentTimestamp) {
+  // Reconstruct game from FEN
+  let game
+  try {
+    game = new Chess(state.fen)
+    state.game = game
+  } catch (error) {
+    console.error("Error reconstructing game from FEN:", error)
+    return { valid: false, reason: "Invalid game state", code: "INVALID_FEN" }
+  }
+
+  // Check turn
+  const currentPlayerBeforeMove = game.turn()
+  const currentPlayerColor = currentPlayerBeforeMove === "w" ? "white" : "black"
+
+  if (currentPlayerColor !== playerColor) {
+    return { valid: false, reason: "Not your turn", code: "WRONG_TURN" }
+  }
+
+  // Handle timing for first move
+  if (!state.gameStarted || state.moveHistory.length === 0) {
+    console.log("FIRST MOVE DETECTED - Starting game timers")
+    state.gameStarted = true
+    state.firstMoveTimestamp = currentTimestamp
+    state.turnStartTimestamp = currentTimestamp
+    state.lastMoveTimestamp = currentTimestamp
+  } else {
+    // Calculate elapsed time and deduct from current player
+    const elapsed = currentTimestamp - state.turnStartTimestamp
+    if (currentPlayerBeforeMove === "w") {
+      state.whiteTime = Math.max(0, state.whiteTime - elapsed)
+    } else {
+      state.blackTime = Math.max(0, state.blackTime - elapsed)
+    }
+  }
+
+  // Check for captured piece
+  const targetSquare = move.to
+  const capturedPiece = game.get(targetSquare)
+
+  // Validate and apply the move
+  let result
+  try {
+    result = game.move(move)
+  } catch (error) {
+    console.error("Chess.js move error:", error)
+    return { valid: false, reason: "Invalid move", code: "CHESS_JS_ERROR", details: error.message }
+  }
+
+  if (!result) return { valid: false, reason: "Illegal move", code: "ILLEGAL_MOVE" }
+
+  return {
+    valid: true,
+    result: result,
+    game: game,
+    capturedPiece: capturedPiece,
+    currentPlayerBeforeMove: currentPlayerBeforeMove,
+  }
+}
+
+function updateGameStateAfterMove(state, moveResult, currentTimestamp) {
+  const { result, capturedPiece, currentPlayerBeforeMove, game } = moveResult
+
+  // Track captured pieces
+  if (capturedPiece) {
+    const capturingPlayer = currentPlayerBeforeMove === "w" ? "white" : "black"
+    state.capturedPieces[capturingPlayer].push(capturedPiece.type)
+    console.log(`${capturingPlayer} captured ${capturedPiece.type}`)
+
+    // --- UNFREEZE LOGIC: Remove the square from frozenPieces if it was frozen ---
+    const opponentColor = capturingPlayer === "white" ? "black" : "white"
+    const capturedSquare = result.to
+    const frozenIndex = state.frozenPieces[opponentColor].indexOf(capturedSquare)
+    if (frozenIndex !== -1) {
+      state.frozenPieces[opponentColor].splice(frozenIndex, 1)
+      console.log(`Unfroze square ${capturedSquare} for ${opponentColor} (piece was captured)`)
+    }
+    // --------------------------------------------------------------------------
+  }
+
+  // Update state after successful move
+  const oldFen = state.fen
+  state.fen = game.fen()
+  state.lastMoveTimestamp = currentTimestamp
+
+  // Add increment to the player who just moved (3+2 time control)
+  if (currentPlayerBeforeMove === "w") {
+    state.whiteTime += state.increment
+  } else {
+    state.blackTime += state.increment
+  }
+
+  // Reset turn start timestamp for the NEXT player's turn
+  state.turnStartTimestamp = currentTimestamp
+  state.moveHistory.push(result)
+
+  // Update the active color
+  const newActivePlayer = game.turn()
+  state.activeColor = newActivePlayer === "w" ? "white" : "black"
+
+  console.log("Move completed:")
+  console.log("- FEN changed from:", oldFen.split(" ")[0], "to:", state.fen.split(" ")[0])
+  console.log("- Next player's turn:", newActivePlayer, "Active color:", state.activeColor)
+  console.log("- Final times - White:", state.whiteTime, "Black:", state.blackTime)
+
+  // Update repetition tracking
+  updateRepetitionMap(state, game)
+}
+
+function finalizeGameEnd(state, gameStatus, currentTimestamp) {
+  state.gameEnded = true
+  state.endReason = gameStatus.result
+  state.winnerColor = gameStatus.winnerColor || null
+  state.endTimestamp = currentTimestamp
+}
+
+function createMoveResult(state, moveResult, gameStatus) {
+  // Add detailed game state info
+  state.gameState = {
+    check: moveResult.game.inCheck ? moveResult.game.inCheck() : false,
+    checkmate: moveResult.game.isCheckmate(),
+    stalemate: moveResult.game.isStalemate(),
+    insufficientMaterial: moveResult.game.isInsufficientMaterial(),
+    threefoldRepetition: moveResult.game.isThreefoldRepetition(),
+    fiftyMoveRule: moveResult.game.isDraw(),
+    lastMove: moveResult.result,
+    result: gameStatus.result,
+    winner:
+      gameStatus.winnerColor && state.players && state.players[gameStatus.winnerColor]
+        ? state.players[gameStatus.winnerColor].username
+        : null,
+    winnerId:
+      gameStatus.winnerColor && state.players && state.players[gameStatus.winnerColor]
+        ? state.players[gameStatus.winnerColor]._id || null
+        : null,
+    drawReason: gameStatus.reason || null,
+    gameEnded: state.gameEnded,
+    endReason: state.endReason,
+    endTimestamp: state.endTimestamp,
+    // Decay-specific state
+    decayActive: state.decayActive,
+    queenDecayTimers: state.queenDecayTimers,
+    majorPieceDecayTimers: state.majorPieceDecayTimers,
+    frozenPieces: state.frozenPieces,
+  }
+
+  return {
+    valid: true,
+    move: moveResult.result,
+    state,
+    gameEnded: state.gameEnded,
+    endReason: state.endReason,
+    endTimestamp: state.endTimestamp,
+    code: "SUCCESS",
+    winnerColor: state.winnerColor,
+    winner: state.winner,
+    ...gameStatus,
+  }
+}
+
+// Get current timer values including decay timers - IMPROVED PRECISION
 export function getCurrentDecayTimers(state, currentTimestamp) {
   try {
     if (!state || typeof state !== "object") {
@@ -665,16 +645,12 @@ export function getCurrentDecayTimers(state, currentTimestamp) {
         activeColor: "white",
         gameEnded: false,
         error: "Invalid state",
-        decayTimers: null,
       }
     }
 
     if (!currentTimestamp || typeof currentTimestamp !== "number") {
       currentTimestamp = Date.now()
     }
-
-    // Update decay timers
-    updateDecayTimers(state, currentTimestamp)
 
     // If game has ended, return final values
     if (state.gameEnded) {
@@ -687,18 +663,21 @@ export function getCurrentDecayTimers(state, currentTimestamp) {
         winner: state.winner,
         shouldNavigateToMenu: true,
         endTimestamp: state.endTimestamp,
-        decayTimers: state.decayTimers,
+        queenDecayTimers: state.queenDecayTimers,
+        majorPieceDecayTimers: state.majorPieceDecayTimers,
         frozenPieces: state.frozenPieces,
       }
     }
 
+    // For first move, don't deduct time
     if (!state.gameStarted || !state.turnStartTimestamp || state.moveHistory.length === 0) {
       return {
         white: state.whiteTime || 180000,
         black: state.blackTime || 180000,
         activeColor: state.activeColor || "white",
         gameEnded: false,
-        decayTimers: state.decayTimers,
+        queenDecayTimers: state.queenDecayTimers,
+        majorPieceDecayTimers: state.majorPieceDecayTimers,
         frozenPieces: state.frozenPieces,
       }
     }
@@ -715,8 +694,6 @@ export function getCurrentDecayTimers(state, currentTimestamp) {
         activeColor: state.activeColor || "white",
         gameEnded: false,
         error: "Invalid FEN",
-        decayTimers: state.decayTimers,
-        frozenPieces: state.frozenPieces,
       }
     }
 
@@ -727,7 +704,7 @@ export function getCurrentDecayTimers(state, currentTimestamp) {
     let whiteTime = state.whiteTime || 180000
     let blackTime = state.blackTime || 180000
 
-    // Deduct time from current player
+    // Deduct time from current player only
     if (currentPlayer === "w") {
       whiteTime = Math.max(0, whiteTime - elapsed)
     } else {
@@ -751,8 +728,6 @@ export function getCurrentDecayTimers(state, currentTimestamp) {
         winner: null,
         shouldNavigateToMenu: true,
         endTimestamp: currentTimestamp,
-        decayTimers: state.decayTimers,
-        frozenPieces: state.frozenPieces,
       }
     }
 
@@ -772,17 +747,19 @@ export function getCurrentDecayTimers(state, currentTimestamp) {
         winner: null,
         shouldNavigateToMenu: true,
         endTimestamp: currentTimestamp,
-        decayTimers: state.decayTimers,
-        frozenPieces: state.frozenPieces,
       }
     }
+
+    // Update decay timers for current player
+    updateDecayTimers(state, currentTimestamp)
 
     return {
       white: whiteTime,
       black: blackTime,
       activeColor: currentPlayerColor,
       gameEnded: false,
-      decayTimers: state.decayTimers,
+      queenDecayTimers: state.queenDecayTimers,
+      majorPieceDecayTimers: state.majorPieceDecayTimers,
       frozenPieces: state.frozenPieces,
     }
   } catch (error) {
@@ -793,8 +770,6 @@ export function getCurrentDecayTimers(state, currentTimestamp) {
       activeColor: state?.activeColor || "white",
       gameEnded: false,
       error: error.message,
-      decayTimers: state?.decayTimers || null,
-      frozenPieces: state?.frozenPieces || null,
     }
   }
 }
@@ -816,21 +791,12 @@ export function getDecayLegalMoves(fen, frozenPieces, playerColor) {
 
     const frozen = frozenPieces[playerColor]
 
-    // Filter out moves from frozen pieces
+    // Filter out moves from frozen squares
     return allMoves.filter((move) => {
-      // Check if moving frozen queen
-      if (frozen.includes("queen")) {
-        const piece = game.get(move.from)
-        if (piece && piece.type === "q" && piece.color === (playerColor === "white" ? "w" : "b")) {
-          return false
-        }
-      }
-
       // Check if moving from a frozen square
       if (frozen.includes(move.from)) {
         return false
       }
-
       return true
     })
   } catch (error) {
@@ -882,9 +848,9 @@ export function checkDecayGameStatus(state, gameInstance) {
     if (!(state.repetitionMap instanceof Map)) {
       state.repetitionMap = new Map(Object.entries(state.repetitionMap || {}))
     }
-
     const repetitionCount = state.repetitionMap.get(game.fen()) || 0
     if (repetitionCount >= 5) return { result: "draw", reason: "fivefold repetition", winnerColor: null }
+
     if (state.moveHistory && state.moveHistory.length >= 150)
       return { result: "draw", reason: "75-move rule", winnerColor: null }
 
@@ -924,6 +890,7 @@ export function updateRepetitionMap(state, gameInstance) {
 
     const current = state.repetitionMap.get(fen) || 0
     state.repetitionMap.set(fen, current + 1)
+
     console.log("Repetition map updated for FEN:", fen, "Count:", current + 1)
   } catch (error) {
     console.error("Error updating repetition map:", error)

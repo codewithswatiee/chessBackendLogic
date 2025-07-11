@@ -5,7 +5,7 @@ import { createGameSession } from './session.controller.js';
 import gameModel from '../models/game.model.js';
 
 // Supported variants
-const VARIANTS = ['xrazyhouse', 'sixpointer', 'decay', 'classic'];
+const VARIANTS = ['crazyhouse', 'sixpointer', 'decay', 'classic'];
 
 // Cooldown in ms
 const REJOIN_COOLDOWN = 10 * 1000;
@@ -360,23 +360,23 @@ async function tryMatch(userId, variant, io, byRank) {
       subvariant,
     });
 
-    const updateGameModel = await gameModel.insertOne({
-      sessionId,
-      players: {
-        white: gameState.players.white.userId,
-        black: gameState.players.black.userId,
-      },
-      variant: variant.toLowerCase(),
-      subvariant,
-      startedAt: new Date(),
-    }, { new: true });
+    // const updateGameModel = await gameModel.insertOne({
+    //   sessionId,
+    //   players: {
+    //     white: gameState.players.white.userId,
+    //     black: gameState.players.black.userId,
+    //   },
+    //   variant: variant.toLowerCase(),
+    //   subvariant,
+    //   startedAt: new Date(),
+    // }, { new: true });
 
-    if (!updateGameModel) {
-      console.error(`[tryMatch] Error updating game model for session ${sessionId}`);
-      userSocket.emit('queue:error', { message: 'Failed to update game model.' });
-      matchSocket.emit('queue:error', { message: 'Failed to update game model.' });
-      return false;
-    }
+    // if (!updateGameModel) {
+    //   console.error(`[tryMatch] Error updating game model for session ${sessionId}`);
+    //   userSocket.emit('queue:error', { message: 'Failed to update game model.' });
+    //   matchSocket.emit('queue:error', { message: 'Failed to update game model.' });
+    //   return false;
+    // }
     
     console.log(`[Matched] Successfully matched user ${userId} with ${bestMatch.userId} in ${variant}`);
     

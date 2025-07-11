@@ -12,15 +12,15 @@ import { getSessionById, updateGameState } from './session.controller.js';
 export async function makeMove({ sessionId, userId, move, timestamp, variant , subvariant  }) {
   const session = await getSessionById(sessionId);
   console.log("Making move:", move, "for user:", userId, "at timestamp:", timestamp);
-  if (!session) return { type: 'game:warning', message: 'Session not found' };
+  if (!session) return { type: 'game:error', message: 'Session not found' };
   const { gameState } = session;
 
   console.log("Current game state:", gameState);
 
 
   const color = (gameState.players.white.userId === userId) ? 'white' : (gameState.players.black.userId === userId) ? 'black' : null;
-  if (!color) return { type: 'game:warning', message: 'User not a player in this game' };
-  if (gameState.status !== 'active') return { type: 'game:warning', message: 'Game is not active' };
+  if (!color) return { type: 'game:error', message: 'User not a player in this game' };
+  if (gameState.status !== 'active') return { type: 'game:error', message: 'Game is not active' };
 
   // --- TIMER LOGIC START ---
   const now = timestamp || Date.now();
@@ -88,7 +88,7 @@ export async function makeMove({ sessionId, userId, move, timestamp, variant , s
   } else if (variant === 'crazyhouse' && subvariant === 'withTimer') {
     possibleMoves = legalMovesCzyTimer(fen).filter(m => m.from === move.from);
   } else {
-    return { type: 'game:warning', message: 'Invalid variant or subvariant'};
+    return { type: 'game:error', message: 'Invalid variant or subvariant'};
   }
   
   console.log("Moves received:", move);
@@ -118,7 +118,14 @@ export async function makeMove({ sessionId, userId, move, timestamp, variant , s
   }
   console.log("Move result:", result);
   if (!result.valid) {
-    return { type: 'game:warning', message: result.reason || 'Invalid move' };
+    // Instead of returning, attach a warning and return the unchanged game state
+    
+    return { 
+      type: 'game:warning', 
+      message: result.reason || 'Invalid move', 
+      move: null, 
+      gameState // return the current state so the frontend can continue
+    };
   }
 
   // Update game state

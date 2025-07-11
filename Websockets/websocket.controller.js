@@ -127,7 +127,8 @@ const websocketRoutes = (io) => {
         console.log("Received game:makeMove for user", userId, "session", sessionId, "move", move);
         const result = await makeMove({ sessionId, userId, move, timestamp, variant, subvariant });
         if (result && result.type === 'game:warning') {
-          gameNamespace.to(sessionId).emit("game:warning", { message: result.message });
+          console.warn("Game warning:", result.message);
+          gameNamespace.to(sessionId).emit("game:warning", { message: result.message, move: result.move, gameState: result.gameState });
           return;
         }
         const { move: moveObj, gameState } = result;
