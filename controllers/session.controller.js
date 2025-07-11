@@ -991,14 +991,22 @@ function getChessRules(variant, subvariant) {
 function initializeTimers(gameState) {
   const { timeControl } = gameState;
   
+  let initialWhite, initialBlack;
+  if (timeControl.type === "sixpointer") {
+    initialWhite = timeControl.perMove;
+    initialBlack = timeControl.perMove;
+  } else {
+    initialWhite = timeControl.baseTime;
+    initialBlack = timeControl.baseTime;
+  }
   return {
     white: {
-      remaining: timeControl.baseTime,
+      remaining: initialWhite,
       lastUpdateTime: Date.now(),
       isRunning: gameState.board.activeColor === 'white'
     },
     black: {
-      remaining: timeControl.baseTime,
+      remaining: initialBlack,
       lastUpdateTime: Date.now(),
       isRunning: gameState.board.activeColor === 'black'
     }

@@ -230,6 +230,17 @@ function checkFoulPlay(state, game, move, playerColor) {
   return false
 }
 
+
+export function resetSixPointerTimer(gameState) {
+    // The activeColor is the player who just moved, so switch to the next player
+    const nextColor = gameState.board.activeColor === 'white' ? 'black' : 'white';
+    gameState.timers[nextColor].remaining = gameState.timeControl.perMove;
+    gameState.timers[nextColor].lastUpdateTime = Date.now();
+
+    console.log(`Resetting timer for ${nextColor}. New time: ${gameState.timers[nextColor].remaining}ms`);
+}
+
+
 // Validate a move and update timers properly for 6PT Chess
 export function validateAndApplyMove(state, move, playerColor, currentTimestamp) {
   try {

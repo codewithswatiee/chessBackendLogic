@@ -5,7 +5,7 @@ import { validateAndApplyMove as validateStandard, getLegalMoves as legalMovesSt
 import { getLegalMoves as legalMovesCzyStnd, validateAndApplyMove as validateCzyStd} from '../validations/crazyhouse/crazyhouseStandard.js';
 import { validateAndApplyMove as validateCzyTimer, getLegalMoves as legalMovesCzyTimer } from '../validations/crazyhouse/crazyhouseTimer.js';
 import { getDecayLegalMoves, validateAndApplyDecayMove } from '../validations/decay.js';
-import { getLegalMoves as legalMovesSixPointer, validateAndApplyMove as validateSixPointer } from '../validations/sixPointer.js';
+import { getLegalMoves as legalMovesSixPointer, validateAndApplyMove as validateSixPointer, resetSixPointerTimer } from '../validations/sixPointer.js';
 import { getSessionById, updateGameState } from './session.controller.js';
 
 // Make a move
@@ -22,50 +22,53 @@ export async function makeMove({ sessionId, userId, move, timestamp, variant , s
   if (!color) return { type: 'game:error', message: 'User not a player in this game' };
   if (gameState.status !== 'active') return { type: 'game:error', message: 'Game is not active' };
 
+  // Initialize arrays/objects if missing
+  gameState.moves = gameState.moves || [];
+  gameState.positionHistory = gameState.positionHistory || [];
+  gameState.metadata = gameState.metadata || {};
+  gameState.metadata.drawOffers = gameState.metadata.drawOffers || { white: false, black: false };
+
   // --- TIMER LOGIC START ---
   const now = timestamp || Date.now();
   const opponentColor = color === 'white' ? 'black' : 'white';
 
-  // Initialize timers if not present
-  if (!gameState.timers) {
-    gameState.timers = {
-      white: { remaining: 180000, lastUpdateTime: now, isRunning: true },
-      black: { remaining: 180000, lastUpdateTime: now, isRunning: false }
-    };
-  }
-
-  // Calculate elapsed time for the player who just moved
-  const elapsed = now - (gameState.timers[color].lastUpdateTime || now);
-  gameState.timers[color].remaining -= elapsed;
-  gameState.timers[color].lastUpdateTime = now;
-  gameState.timers[color].isRunning = false;
-
-  // Start opponent's timer
-  gameState.timers[opponentColor].isRunning = true;
-  gameState.timers[opponentColor].lastUpdateTime = now;
-
-  // If time runs out
-  if (gameState.timers[color].remaining <= 0) {
-    gameState.status = 'finished';
-    gameState.result = opponentColor;
-    gameState.resultReason = 'timeout';
-    gameState.winner = opponentColor;
-    gameState.endedAt = now;
-    await updateGameState(sessionId, gameState);
-    await Game.findOneAndUpdate(
-      { sessionId },
-      {
-        $set: {
-          moves: gameState.moves,
-          state: gameState.board,
-          winner: gameState.winner,
-          result: gameState.result,
-          endedAt: gameState.endedAt,
-        },
-      },
-      { upsert: true }
-    );
-    return { move: null, gameState };
+  if (variant !== 'sixpointer') {
+    // Generic timer logic for non-sixpointer variants
+    if (!gameState.timers) {
+      gameState.timers = {
+        white: { remaining: 180000, lastUpdateTime: now, isRunning: true },
+        black: { remaining: 180000, lastUpdateTime: now, isRunning: false }
+      };
+    }
+    const elapsed = now - (gameState.timers[color].lastUpdateTime || now);
+    gameState.timers[color].remaining -= elapsed;
+    gameState.timers[color].lastUpdateTime = now;
+    gameState.timers[color].isRunning = false;
+    gameState.timers[opponentColor].isRunning = true;
+    gameState.timers[opponentColor].lastUpdateTime = now;
+    // If time runs out
+    if (gameState.timers[color].remaining <= 0) {
+      gameState.status = 'finished';
+      gameState.result = opponentColor;
+      gameState.resultReason = 'timeout';
+      gameState.winner = opponentColor;
+      gameState.endedAt = now;
+      await updateGameState(sessionId, gameState);
+      // await Game.findOneAndUpdate(
+      //   { sessionId },
+      //   {
+      //     $set: {
+      //       moves: gameState.moves,
+      //       state: gameState.board,
+      //       winner: gameState.winner,
+      //       result: gameState.result,
+      //       endedAt: gameState.endedAt,
+      //     },
+      //   },
+      //   { upsert: true }
+      // );
+      return { move: null, gameState };
+    }
   }
   // --- TIMER LOGIC END ---
 
@@ -135,6 +138,10 @@ export async function makeMove({ sessionId, userId, move, timestamp, variant , s
   gameState.lastMove = result.move;
   gameState.positionHistory.push(result.state.fen);
   gameState.gameState = result;
+
+  if(variant === 'sixpointer') {
+    resetSixPointerTimer(gameState); // Call BEFORE changing activeColor
+  }
 
   // Change activeColor to next player
   gameState.board.activeColor = (color === 'white') ? 'black' : 'white';
