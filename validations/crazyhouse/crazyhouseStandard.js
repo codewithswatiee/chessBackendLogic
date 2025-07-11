@@ -125,13 +125,11 @@ function validatePieceDrop(game, piece, square) {
   try {
     // Simulate the drop by placing piece temporarily
     tempGame.put({ type: piece.type, color: piece.color }, square)
-
     // If this creates an impossible position, it's invalid
     if (tempGame.inCheck()) {
       const moves = tempGame.moves()
       if (moves.length === 0) return false // Would be checkmate, invalid drop
     }
-
     return true
   } catch (error) {
     return false
@@ -144,8 +142,8 @@ export function createInitialState() {
     const game = new Chess() // Standard starting position
     const fen = game.fen()
     const [position, activeColor, castlingRights, enPassantSquare, halfmoveClock, fullmoveNumber] = fen.split(" ")
-
     const now = Date.now()
+
     return {
       fen,
       position,
@@ -187,8 +185,8 @@ export function createInitialState() {
 export function validateAndApplyMove(state, move, playerColor, currentTimestamp) {
   try {
     console.log("=== CRAZYHOUSE STANDARD MOVE VALIDATION START ===")
-    console.log("Move:", move, "Player:", playerColor)
-    console.log("Pocket pieces:", state.pocketPieces)
+    console.log("Move:", JSON.stringify(move), "Player:", playerColor)
+    console.log("Current pocket pieces:", JSON.stringify(state.pocketPieces))
 
     // Validate input parameters
     if (!state || typeof state !== "object") {
@@ -358,10 +356,12 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
     let result
     let isDrop = false
 
-    // Check if this is a piece drop (has 'drop' property) or regular move
-    if (move.drop) {
+    // FIXED: Check if this is a piece drop (has 'drop' property) or regular move
+    if (move.drop && move.drop.piece && move.drop.square) {
       isDrop = true
       const { piece, square } = move.drop
+
+      console.log("Processing drop:", piece, "to", square)
 
       // Validate piece drop
       if (!validatePieceDrop(game, piece, square)) {
@@ -369,29 +369,41 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
       }
 
       // Check if player has this piece in pocket
-      const playerPocket = state.pocketPieces[playerColor]
+      const playerPocket = state.pocketPieces[playerColor] || []
       const pieceIndex = playerPocket.findIndex((p) => p.type === piece.type && p.color === piece.color)
 
       if (pieceIndex === -1) {
+        console.log("Piece not found in pocket. Available pieces:", playerPocket)
         return { valid: false, reason: "Piece not available in pocket", code: "PIECE_NOT_IN_POCKET" }
       }
 
       // Remove piece from pocket
       state.pocketPieces[playerColor].splice(pieceIndex, 1)
+      console.log("Removed piece from pocket. Remaining:", state.pocketPieces[playerColor])
 
       // Apply the drop by placing the piece on the board
       try {
-        game.put({ type: piece.type, color: piece.color }, square)
+        const pieceToPlace = {
+          type: piece.type,
+          color: playerColor === "white" ? "w" : "b",
+        }
+        game.put(pieceToPlace, square)
+
+        // Create a result object similar to chess.js move result
         result = {
           from: null,
           to: square,
           piece: piece.type,
-          color: piece.color,
+          color: playerColor === "white" ? "w" : "b",
           flags: "d", // drop flag
           san: `${piece.type.toUpperCase()}@${square}`,
           drop: true,
+          captured: null,
         }
+
+        console.log("Drop successful:", result)
       } catch (error) {
+        console.error("Failed to drop piece:", error)
         return { valid: false, reason: "Failed to drop piece", code: "DROP_FAILED", details: error.message }
       }
     } else {
@@ -461,7 +473,6 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
       state.endReason = resultStatus.result
       state.winnerColor = resultStatus.winnerColor || null
       state.endTimestamp = currentTimestamp
-
       console.log(`CRAZYHOUSE STANDARD GAME ENDED: ${resultStatus.result}`)
       resultStatus.shouldNavigateToMenu = true
       resultStatus.endTimestamp = currentTimestamp
@@ -471,7 +482,7 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
     // Remove any accidental Chess instance before returning state
     if (state.game) delete state.game
 
-    // Add detailed game state info for frontend
+    // FIXED: Add detailed game state info for frontend with proper pocket pieces
     state.gameState = {
       check: game.inCheck ? game.inCheck() : false,
       checkmate: game.isCheckmate(),
@@ -503,12 +514,18 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
       endReason: state.endReason,
       endTimestamp: state.endTimestamp,
       // Standard Crazyhouse specific info
-      pocketPieces: state.pocketPieces,
+      pocketPieces: state.pocketPieces, // CRITICAL: Include updated pocket pieces
       variant: state.variant,
       isDrop: isDrop,
     }
 
+    // FIXED: Also add pocket pieces to the main board state for compatibility
+    state.board = state.board || {}
+    state.board.pocketPieces = state.pocketPieces
+
+    console.log("Final pocket pieces in state:", JSON.stringify(state.pocketPieces))
     console.log("=== CRAZYHOUSE STANDARD MOVE VALIDATION END ===")
+
     return {
       valid: true,
       move: result,
@@ -520,6 +537,7 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
       winnerColor: state.winnerColor,
       winner: state.winner,
       isDrop: isDrop,
+      pocketPieces: state.pocketPieces, // CRITICAL: Include in response
       ...resultStatus,
     }
   } catch (error) {
@@ -547,6 +565,7 @@ export function getCurrentTimers(state, currentTimestamp) {
         error: "Invalid state",
       }
     }
+
     if (!currentTimestamp || typeof currentTimestamp !== "number") {
       currentTimestamp = Date.now()
     }
@@ -562,8 +581,8 @@ export function getCurrentTimers(state, currentTimestamp) {
         winner: state.winner,
         shouldNavigateToMenu: true,
         endTimestamp: state.endTimestamp,
-        pocketPieces: state.pocketPieces,
-        variant: state.variant,
+        pocketPieces: state.pocketPieces || { white: [], black: [] }, // FIXED: Include pocket pieces
+        variant: state.variant || "crazyhouse-standard",
       }
     }
 
@@ -573,7 +592,7 @@ export function getCurrentTimers(state, currentTimestamp) {
         black: state.blackTime || 180000,
         activeColor: state.activeColor || "white",
         gameEnded: false,
-        pocketPieces: state.pocketPieces || { white: [], black: [] },
+        pocketPieces: state.pocketPieces || { white: [], black: [] }, // FIXED: Include pocket pieces
         variant: state.variant || "crazyhouse-standard",
       }
     }
@@ -624,7 +643,7 @@ export function getCurrentTimers(state, currentTimestamp) {
         winner: null,
         shouldNavigateToMenu: true,
         endTimestamp: currentTimestamp,
-        pocketPieces: state.pocketPieces,
+        pocketPieces: state.pocketPieces || { white: [], black: [] }, // FIXED: Include pocket pieces
         variant: state.variant,
       }
     }
@@ -645,7 +664,7 @@ export function getCurrentTimers(state, currentTimestamp) {
         winner: null,
         shouldNavigateToMenu: true,
         endTimestamp: currentTimestamp,
-        pocketPieces: state.pocketPieces,
+        pocketPieces: state.pocketPieces || { white: [], black: [] }, // FIXED: Include pocket pieces
         variant: state.variant,
       }
     }
@@ -655,7 +674,7 @@ export function getCurrentTimers(state, currentTimestamp) {
       black: blackTime,
       activeColor: currentPlayerColor,
       gameEnded: false,
-      pocketPieces: state.pocketPieces || { white: [], black: [] },
+      pocketPieces: state.pocketPieces || { white: [], black: [] }, // FIXED: Include pocket pieces
       variant: state.variant || "crazyhouse-standard",
     }
   } catch (error) {
@@ -666,7 +685,7 @@ export function getCurrentTimers(state, currentTimestamp) {
       activeColor: state?.activeColor || "white",
       gameEnded: false,
       error: error.message,
-      pocketPieces: state?.pocketPieces || { white: [], black: [] },
+      pocketPieces: state?.pocketPieces || { white: [], black: [] }, // FIXED: Include pocket pieces
       variant: state?.variant || "crazyhouse-standard",
     }
   }
@@ -679,6 +698,7 @@ export function getLegalMoves(fen, pocketPieces) {
       console.error("[MOVES] Invalid FEN provided to getLegalMoves:", fen)
       return []
     }
+
     const game = new Chess(fen)
     const moves = game.moves({ verbose: true })
 
@@ -755,7 +775,6 @@ export function checkCrazyhouseGameStatus(state, gameInstance) {
       const currentPlayer = game.turn()
       const playerColor = currentPlayer === "w" ? "white" : "black"
       const playerPocket = state.pocketPieces?.[playerColor] || []
-
       if (playerPocket.length > 0) {
         // Player has pieces to drop, so not actually stalemate
         return { result: "ongoing", winnerColor: null }
@@ -785,7 +804,6 @@ export function checkGameStatus(state, gameInstance) {
   if (state?.variant === "crazyhouse-standard") {
     return checkCrazyhouseGameStatus(state, gameInstance)
   }
-
   // Fallback to standard chess logic
   try {
     if (!state || typeof state !== "object") {

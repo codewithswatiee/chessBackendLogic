@@ -134,7 +134,7 @@ const websocketRoutes = (io) => {
         const { move: moveObj, gameState } = result;
         // Always emit all game events to the whole session
         gameNamespace.to(sessionId).emit("game:move", { move: moveObj, gameState });
-        gameNamespace.to(sessionId).emit("game:timer", { timers: gameState.board.whiteTime, black: gameState.board.blackTime });
+        gameNamespace.to(sessionId).emit("game:timer", { white: gameState.timers.white.remaining, black: gameState.timers.black.remaining });
         if (gameState.status === 'finished') {
           gameNamespace.to(sessionId).emit("game:end", { gameState });
         }

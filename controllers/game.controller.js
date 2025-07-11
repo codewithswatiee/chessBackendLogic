@@ -54,20 +54,58 @@ export async function makeMove({ sessionId, userId, move, timestamp, variant , s
       gameState.winner = opponentColor;
       gameState.endedAt = now;
       await updateGameState(sessionId, gameState);
-      // await Game.findOneAndUpdate(
-      //   { sessionId },
-      //   {
-      //     $set: {
-      //       moves: gameState.moves,
-      //       state: gameState.board,
-      //       winner: gameState.winner,
-      //       result: gameState.result,
-      //       endedAt: gameState.endedAt,
-      //     },
-      //   },
-      //   { upsert: true }
-      // );
       return { move: null, gameState };
+    }
+  } else {
+    // --- SIXPOINTER TIMER LOGIC ---
+    if (variant === 'sixpointer') {
+      if (!gameState.timers) {
+        gameState.timers = {
+          white: { remaining: 30000, lastUpdateTime: now, isRunning: true },
+          black: { remaining: 30000, lastUpdateTime: now, isRunning: false }
+        };
+      }
+      const elapsed = now - (gameState.timers[color].lastUpdateTime || now);
+      gameState.timers[color].remaining -= elapsed;
+
+      // If time runs out for the current player
+      if (gameState.timers[color].remaining <= 0) {
+        // Reduce 1 point from the player who timed out
+        if (gameState.board.points) {
+          gameState.board.points[color] = Math.max(0, (gameState.board.points[color] || 0) - 1);
+        } else {
+          // fallback for legacy keys
+          const pointsKey = color === 'white' ? 'whitePoints' : 'blackPoints';
+          gameState.board[pointsKey] = Math.max(0, (gameState.board[pointsKey] || 0) - 1);
+        }
+
+        // Pass the turn to the opponent
+        gameState.board.activeColor = opponentColor;
+
+        // Reset both timers
+        gameState.timers.white.remaining = 30000;
+        gameState.timers.black.remaining = 30000;
+        gameState.timers.white.lastUpdateTime = now;
+        gameState.timers.black.lastUpdateTime = now;
+        gameState.timers.white.isRunning = (opponentColor === 'white');
+        gameState.timers.black.isRunning = (opponentColor === 'black');
+
+        // Also reset whiteTime and blackTime for sixpointer
+        gameState.board.whiteTime = 30000;
+        gameState.board.blackTime = 30000;
+
+        await updateGameState(sessionId, gameState);
+
+        return {
+          type: 'game:warning',
+          message: `${color} timed out, 1 point deducted and turn passed to ${opponentColor}`,
+          move: null,
+          gameState
+        };
+      }
+
+      // Normal timer reset after a valid move (keep your existing logic here)
+      // ...
     }
   }
   // --- TIMER LOGIC END ---
@@ -141,6 +179,9 @@ export async function makeMove({ sessionId, userId, move, timestamp, variant , s
 
   if(variant === 'sixpointer') {
     resetSixPointerTimer(gameState); // Call BEFORE changing activeColor
+    // Also reset whiteTime and blackTime for sixpointer
+    gameState.board.whiteTime = 30000;
+    gameState.board.blackTime = 30000;
   }
 
   // Change activeColor to next player
@@ -154,7 +195,7 @@ export async function makeMove({ sessionId, userId, move, timestamp, variant , s
     gameState.status = 'finished';
     gameState.result = result.result;
     gameState.resultReason = result.reason || null;
-    gameState.winner = result.winnerId || null;
+    gameState.winner = result.winner || null;
     gameState.endedAt = Date.now();
     // Persist to MongoDB
     // await Game.findOneAndUpdate(
