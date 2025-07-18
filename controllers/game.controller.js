@@ -2,8 +2,8 @@ import Game from '../models/game.model.js';
 import { getLegalMoves as legalMovesBlitz, validateAndApplyMove as validateBlitz } from '../validations/classic/blitz.js';
 import { getLegalMoves as legalMovesBullet, validateAndApplyMove as validateBullet} from '../validations/classic/bullet.js';
 import { validateAndApplyMove as validateStandard, getLegalMoves as legalMovesStandard } from '../validations/classic/standard.js';
-import { getLegalMoves as legalMovesCzyStnd, validateAndApplyMove as validateCzyStd} from '../validations/crazyhouse/crazyhouseStandard.js';
-import { validateAndApplyMove as validateCzyTimer, getLegalMoves as legalMovesCzyTimer } from '../validations/crazyhouse/crazyhouseTimer.js';
+import { getCrazyhouseLegalMoves, validateAndApplyCrazyhouseMove } from '../validations/crazyhouse/crazyhouseStandard.js';
+import { getCrazyhouseWithTimerLegalMoves, validateAndApplyCrazyhouseWithTimerMove } from '../validations/crazyhouse/crazyhouseTimer.js';
 import { getDecayLegalMoves, validateAndApplyDecayMove } from '../validations/decay.js';
 import { getLegalMoves as legalMovesSixPointer, validateAndApplyMove as validateSixPointer, resetSixPointerTimer } from '../validations/sixPointer.js';
 import { getSessionById, updateGameState } from './session.controller.js';
@@ -123,11 +123,11 @@ export async function makeMove({ sessionId, userId, move, timestamp, variant , s
   } else if(variant === 'sixpointer') {
     possibleMoves = legalMovesSixPointer(fen).filter(m => m.from === move.from);
   } else if(variant === 'decay') {
-    possibleMoves = getDecayLegalMoves(fen).filter(m => m.from === move.from); // Assuming decay uses standard moves for now
+    possibleMoves = getDecayLegalMoves(fen).filter(m => m.from === move.from); 
   } else if (variant === 'crazyhouse' && subvariant === 'standard') {
-    possibleMoves = legalMovesCzyStnd(fen).filter(m => m.from === move.from);
+    possibleMoves = getCrazyhouseLegalMoves(gameState.board);
   } else if (variant === 'crazyhouse' && subvariant === 'withTimer') {
-    possibleMoves = legalMovesCzyTimer(fen).filter(m => m.from === move.from);
+    possibleMoves = getCrazyhouseWithTimerLegalMoves(gameState.board, timestamp);
   } else {
     return { type: 'game:error', message: 'Invalid variant or subvariant'};
   }
@@ -153,9 +153,9 @@ export async function makeMove({ sessionId, userId, move, timestamp, variant , s
   } else if(variant === 'decay') {
     result = validateAndApplyDecayMove(gameState.board, move, color, timestamp);
   } else if (variant === 'crazyhouse' && subvariant === 'standard') {
-    result = validateCzyStd(gameState.board, move, color, timestamp);
+    result = validateAndApplyCrazyhouseMove(gameState.board, move, color, timestamp);
   } else if (variant === 'crazyhouse' && subvariant === 'withTimer') {
-    result = validateCzyTimer(gameState.board, move, color, timestamp);
+    result = validateAndApplyCrazyhouseWithTimerMove(gameState.board, move, color, timestamp);
   }
   console.log("Move result:", result);
   if (!result.valid) {
@@ -250,9 +250,9 @@ export async function getPossibleMoves({ sessionId, square, variant, subvariant 
   } else if(variant === 'decay') {
     moves = getDecayLegalMoves(fen).filter(m => m.from === square); //
   } else if (variant === 'crazyhouse' && subvariant === 'standard') {
-    moves = legalMovesCzyStnd(fen).filter(m => m.from === square);
+    moves = getCrazyhouseLegalMoves(gameState.board);
   } else if (variant === 'crazyhouse' && subvariant === 'withTimer') {
-    moves = legalMovesCzyTimer(fen).filter(m => m.from === square);
+    moves = getCrazyhouseWithTimerLegalMoves(gameState.board, timestamp);
   } else {
     throw new Error('Invalid variant or subvariant');
   }

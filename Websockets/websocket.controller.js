@@ -9,9 +9,10 @@ import {
 } from "../controllers/game.controller.js";
 import {
   joinQueue,
-  leaveQueue,
   cleanupIdleUsers,
+  handleDisconnect,
 } from "../controllers/matchmaking.controller.js";
+import { createTournament, getActiveTournamentDetails, joinTournament, leaveTournament } from "../controllers/tournament.controller.js";
 
 dotenv.config();
 
@@ -22,74 +23,144 @@ const websocketRoutes = (io) => {
   const matchmakingNamespace = io.of("/matchmaking");
 
   matchmakingNamespace.on("connection", (socket) => {
-    const queryParams = socket.handshake.auth;
-    const userId = queryParams.userId;
+        // userId should ideally come from an authenticated session (e.g., JWT in handshake.auth.token)
+        const queryParams = socket.handshake.auth;
+        const userId = queryParams.userId; // Get userId from auth payload
 
-    if (!userId) {
-      console.error("UserId not provided in handshake query");
-      socket.disconnect(true);
-      return;
-    }
+        if (!userId) {
+            console.error("UserId not provided in handshake auth");
+            socket.disconnect(true);
+            return;
+        }
 
-    console.log("User connected to socket:", socket.id);
-
-    // Listen for join queue
-    socket.on("queue:join", async ({ variant, subvariant='' }) => {
-      console.log("Received queue:join for user", userId, "variant", variant, subvariant);
-
-      try {
+        // Store the mapping for disconnection handling
         socketIdToUserId[socket.id] = userId;
+        console.log(`User ${userId} connected to socket: ${socket.id}`);
 
-        await joinQueue({
-          userId,
-          socketId: socket.id,
-          variant,
-          io: matchmakingNamespace,
-          subvariant,
+        // --- Regular Matchmaking Events ---
+        socket.on("queue:join", async ({ variant, subvariant = '' }) => {
+            console.log("Received queue:join for user", userId, "variant", variant, subvariant);
+
+            try {
+                // The socketIdToUserId mapping is already handled on connection.
+
+                await joinQueue({
+                    userId,
+                    socketId: socket.id,
+                    variant,
+                    io: matchmakingNamespace, // Pass the namespace for emitting events
+                    subvariant,
+                });
+
+                console.log(`User ${userId} successfully joined the regular queue`);
+            } catch (err) {
+                console.error("Error joining regular queue:", err);
+                socket.emit("queue:error", {
+                    message: "Failed to join regular queue",
+                    error: err.message || err,
+                });
+            }
         });
 
-        console.log(`User ${userId} successfully joined the queue`);
-      } catch (err) {
-        console.error("Error joining queue:", err);
-        socket.emit("queue:error", {
-          message: "Failed to join queue",
-          error: err.message || err,
+        socket.on("queue:leave", async () => {
+            try {
+                await handleDisconnect(userId, socket.id); // Use the general disconnect handler for cleanup
+                socket.emit("queue:left");
+                console.log(`User ${userId} explicitly left the regular queue`);
+            } catch (err) {
+                socket.emit("queue:error", {
+                    message: "Failed to leave regular queue",
+                    error: err.message,
+                });
+            }
         });
-      }
+
+        // --- Tournament Matchmaking Events ---
+        socket.on("tournament:join", async () => {
+            console.log(`Received tournament:join for user ${userId}`);
+            try {
+                await joinTournament({
+                    userId,
+                    socketId: socket.id,
+                    io: matchmakingNamespace, // Pass the namespace
+                });
+                console.log(`User ${userId} successfully joined the tournament`);
+            } catch (err) {
+                console.error("Error joining tournament:", err);
+                socket.emit("tournament:error", {
+                    message: "Failed to join tournament",
+                    error: err.message || err,
+                });
+            }
+        });
+
+        socket.on("tournament:leave", async () => {
+            console.log(`Received tournament:leave for user ${userId}`);
+            try {
+                const activeTournament = await getActiveTournamentDetails();
+                if (activeTournament) {
+                    await leaveTournament(userId, activeTournament.id); // Use the tournament-specific leave
+                    socket.emit("tournament:left", { message: 'You have left the tournament.' });
+                    console.log(`User ${userId} explicitly left tournament ${activeTournament.id}`);
+                } else {
+                    socket.emit("tournament:error", { message: "No active tournament to leave." });
+                }
+            } catch (err) {
+                console.error("Error leaving tournament:", err);
+                socket.emit("tournament:error", {
+                    message: "Failed to leave tournament",
+                    error: err.message,
+                });
+            }
+        });
+
+        socket.on("tournament:get_active", async () => {
+            console.log(`Received tournament:get_active for user ${userId}`);
+            try {
+                const activeTournament = await getActiveTournamentDetails();
+                socket.emit("tournament:active_details", { tournament: activeTournament });
+            } catch (err) {
+                console.error("Error fetching active tournament details:", err);
+                socket.emit("tournament:error", {
+                    message: "Failed to fetch active tournament details.",
+                    error: err.message || err,
+                });
+            }
+        });
+
+        // Event for creating tournaments (typically an admin-only action)
+        socket.on("tournament:create", async ({ name, capacity, startTime, duration, entryFee, prizePool }) => {
+            // Implement authorization check here (e.g., if user is admin)
+            if (userId !== 'ADMIN_USER_ID') { // Replace with actual admin check
+                socket.emit('tournament:error', { message: 'Unauthorized: Only admins can create tournaments.' });
+                return;
+            }
+            try {
+                const tournamentId = await createTournament({ name, capacity, startTime, duration, entryFee, prizePool });
+                // Emit to all connected clients in the namespace to notify about new tournament
+                matchmakingNamespace.emit('tournament:new_active', { tournamentId, name, message: 'A new tournament has been created!' });
+                socket.emit('tournament:created', { tournamentId, message: 'Tournament created successfully.' });
+                console.log(`Admin ${userId} created tournament ${tournamentId}`);
+            } catch (error) {
+                console.error('Error creating tournament:', error);
+                socket.emit('tournament:error', { message: 'Failed to create tournament.' });
+            }
+        });
+
+
+        // --- Disconnect Handling ---
+        socket.on("disconnect", async () => {
+            const disconnectedUserId = socketIdToUserId[socket.id];
+            if (disconnectedUserId) {
+                // Use the universal handleDisconnect that checks both regular and tournament queues
+                await handleDisconnect(disconnectedUserId, socket.id);
+                delete socketIdToUserId[socket.id];
+                console.log(`User disconnected and cleaned up from queues: ${disconnectedUserId}`);
+            } else {
+                console.log(`Socket disconnected without mapped user: ${socket.id}`);
+            }
+        });
     });
-
-    // Listen for leave queue
-    socket.on("queue:leave", async () => {
-      try {
-        await leaveQueue(userId);
-        socket.emit("queue:left");
-
-        // Clean up mapping
-        Object.keys(socketIdToUserId).forEach((sid) => {
-          if (socketIdToUserId[sid] === userId) delete socketIdToUserId[sid];
-        });
-
-        console.log("User left the queue:", userId);
-      } catch (err) {
-        socket.emit("queue:error", {
-          message: "Failed to leave queue",
-          error: err.message,
-        });
-      }
-    });
-
-    // On disconnect, remove user from queue if present
-    socket.on("disconnect", async () => {
-      const userId = socketIdToUserId[socket.id];
-      if (userId) {
-        await leaveQueue(userId);
-        delete socketIdToUserId[socket.id];
-        console.log(`User disconnected and left queue: ${userId}`);
-      } else {
-        console.log(`Socket disconnected without mapped user: ${socket.id}`);
-      }
-    });
-  });
 
   // Periodic cleanup of idle users
   const intervalId = setInterval(() => {
@@ -132,6 +203,7 @@ const websocketRoutes = (io) => {
           return;
         }
         const { move: moveObj, gameState } = result;
+        console.log("Game making a move")
         // Always emit all game events to the whole session
         gameNamespace.to(sessionId).emit("game:move", { move: moveObj, gameState });
         gameNamespace.to(sessionId).emit("game:timer", { white: gameState.timers.white.remaining, black: gameState.timers.black.remaining });

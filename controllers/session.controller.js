@@ -9,28 +9,28 @@ import { createInitialState as createBlitzInitialState } from '../validations/cl
 import { createInitialState as createBulletInitialState} from '../validations/classic/bullet.js';
 import { createInitialState as createSixPointerInitialState, generateRandomBalancedPosition } from '../validations/sixPointer.js';
 import { createDecayInitialState } from '../validations/decay.js';
-import { createInitialState as createCzyStndInitState} from '../validations/crazyhouse/crazyhouseStandard.js';
-import { createInitialState as createCzyTimerInitState } from '../validations/crazyhouse/crazyhouseTimer.js';
+import { createInitialCrazyhouseState} from '../validations/crazyhouse/crazyhouseStandard.js';
+import { createInitialCrazyhouseWithTimerState } from '../validations/crazyhouse/crazyhouseTimer.js';
 
 // Game variants and their configurations
 const GAME_VARIANTS = {
   classic: {
-    name: 'Classic',
+    name: 'classic',
     subvariants: {
       standard: {
-        name: 'Standard',
+        name: 'standard',
         initialFen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
         timeControl: { base: 10 * 60 * 1000, increment: 0 }, // 10 minutes
         description: 'Standard FIDE chess rules with classical time control'
       },
       blitz: {
-        name: 'Blitz',
+        name: 'blitz',
         initialFen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
         timeControl: { base: 3 * 60 * 1000, increment: 2000 }, // 3+2
         description: 'Fast-paced chess with 3 minutes base + 2 second increment'
       },
       bullet: {
-        name: 'Bullet',
+        name: 'bullet',
         initialFen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
         timeControl: { base: 60 * 1000, increment: 0 }, // 1+0 (corrected from 1+1)
         description: 'Ultra-fast chess with 1 minute base, no increment'
@@ -38,23 +38,23 @@ const GAME_VARIANTS = {
     }
   },
   sixpointer: {
-    name: '6-Point Chess',
+    name: 'sixpointer',
     description: 'A variant of chess where each player has 6 points worth of pieces, allowing for unique strategies and gameplay.',
   },
   decay:{
-    name: 'Decay Chess',
+    name: 'decay',
     description: 'A variant of chess where pieces decay over time, adding a new layer of strategy.',
   },
   crazyhouse: {
-    name: 'Crazyhouse',
+    name: 'crazyhouse',
     subvariants: {
       standard: {
-        name: 'Standard',
+        name: 'standard',
         timeControl: { base: 3 * 60 * 1000, increment: 2000 }, // 10 minutes
         description: 'Crazyhouse chess with 3 minutes base + 2 second increment'
       },
       withTimer: {
-        name: 'Crazyhouse with Timer',
+        name: 'withTimer',
         timeControl: { base: 3 * 60 * 1000, increment: 2000 }, // 3+2
         description: 'Crazyhouse chess with 3 minutes base + 2 second increment'
       }
@@ -592,7 +592,7 @@ function createInitialGameState(variant, subvariant, whitePlayer, blackPlayer) {
       }
     };
   } else if (variant === 'crazyhouse' && subvariant === 'standard') {
-    const initialState = createCzyStndInitState();
+    const initialState = createInitialCrazyhouseState();
     return {
       board: initialState, // or a dedicated sixPointer initial state if you have one
       sessionId: null,
@@ -673,7 +673,7 @@ function createInitialGameState(variant, subvariant, whitePlayer, blackPlayer) {
       }
     };
   } else if (variant === 'crazyhouse' && subvariant === 'withTimer') {
-    const initialState = createCzyTimerInitState();
+    const initialState = createInitialCrazyhouseWithTimerState();
     return {
       board: initialState, // or a dedicated sixPointer initial state if you have one
       sessionId: null,
