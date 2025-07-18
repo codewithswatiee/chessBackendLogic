@@ -37,12 +37,9 @@ const IDLE_TIMEOUT = 5 * 60 * 1000;
 const RANK_WINDOW = 10 * 1000;
 
 // Redis key helpers
-const queueKey = (variant) => {
-    // This helper needs to be able to generate keys for subvariants too if used directly.
-    // For now, it assumes 'classic' is handled separately or the variant already includes subvariant.
-    // This is okay as REGULAR_QUEUE_KEYS_BY_VARIANT handles the full key.
-    return REGULAR_QUEUE_KEYS_BY_VARIANT[variant] || `queue:${variant}`;
-};
+// const queueKey = (variant) => { // This helper is no longer needed
+//     return REGULAR_QUEUE_KEYS_BY_VARIANT[variant] || `queue:${variant}`;
+// };
 const userKey = (userId) => `queueuser:${userId}`; // For regular queue users
 const cooldownKey = (userId) => `cooldown:${userId}`;
 
@@ -111,8 +108,13 @@ async function initiateMatch(player1Data, player2Data, player1Socket, player2Soc
                 await redisClient.zRem(TOURNAMENT_QUEUE_KEY, userData.userId);
             }
         } else {
-            const specificQueueKey = userData.variant === 'classic' ? `queue:classic:${userData.subvariant}` : `queue:${userData.variant}`;
-            await redisClient.zRem(specificQueueKey, userData.userId);
+            // Use REGULAR_QUEUE_KEYS_BY_VARIANT to get the correct queue key
+            const specificQueueKey = userData.variant === 'classic' ? REGULAR_QUEUE_KEYS_BY_VARIANT[`classic:${userData.subvariant}`] : REGULAR_QUEUE_KEYS_BY_VARIANT[userData.variant];
+            if (specificQueueKey) {
+                 await redisClient.zRem(specificQueueKey, userData.userId);
+            } else {
+                console.warn(`[cleanupPlayer] Could not determine specific regular queue key for user ${userData.userId}, variant ${userData.variant}, subvariant ${userData.subvariant}.`);
+            }
             await redisClient.del(userKey(userData.userId));
         }
         console.log(`[initiateMatch] Cleaned up ${userData.userId} from ${isTournament ? 'tournament' : 'regular'} queue.`);
