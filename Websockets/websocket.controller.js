@@ -203,7 +203,6 @@ const websocketRoutes = (io) => {
           return;
         }
         const { move: moveObj, gameState } = result;
-        console.log("Game making a move")
         // Always emit all game events to the whole session
         gameNamespace.to(sessionId).emit("game:move", { move: moveObj, gameState });
         gameNamespace.to(sessionId).emit("game:timer", { white: gameState.timers.white.remaining, black: gameState.timers.black.remaining });

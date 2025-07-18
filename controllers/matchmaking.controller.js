@@ -12,6 +12,20 @@ import {
     leaveTournament, // We will use this to clean up tournament users if they get matched
 } from './tournament.controller.js';
 
+// --- NEW EXPORTS FOR TOURNAMENT CONTROLLER ---
+// Define and export these here for use in tournament.controller.js
+export const REGULAR_QUEUE_KEYS_BY_VARIANT = {
+    'crazyhouse': 'queue:crazyhouse',
+    'sixpointer': 'queue:sixpointer',
+    'decay': 'queue:decay',
+    'classic:blitz': 'queue:classic:blitz',
+    'classic:bullet': 'queue:classic:bullet',
+    'classic:standard': 'queue:classic:standard',
+};
+export const REGULAR_USER_DATA_KEY = (userId) => `queueuser:${userId}`;
+// --- END NEW EXPORTS ---
+
+
 // Supported variants
 const VARIANTS = ['crazyhouse', 'sixpointer', 'decay', 'classic'];
 
@@ -23,7 +37,12 @@ const IDLE_TIMEOUT = 5 * 60 * 1000;
 const RANK_WINDOW = 10 * 1000;
 
 // Redis key helpers
-const queueKey = (variant) => `queue:${variant}`;
+const queueKey = (variant) => {
+    // This helper needs to be able to generate keys for subvariants too if used directly.
+    // For now, it assumes 'classic' is handled separately or the variant already includes subvariant.
+    // This is okay as REGULAR_QUEUE_KEYS_BY_VARIANT handles the full key.
+    return REGULAR_QUEUE_KEYS_BY_VARIANT[variant] || `queue:${variant}`;
+};
 const userKey = (userId) => `queueuser:${userId}`; // For regular queue users
 const cooldownKey = (userId) => `cooldown:${userId}`;
 
@@ -38,41 +57,72 @@ export function getRatingField(variant) { // Export this for use in tournament.c
     }
 }
 
-// Helper: Centralized match initiation function
+/**
+ * Helper: Centralized match initiation function
+ * This function is now more robust to determine the game variant and clean up queues.
+ * @param {Object} player1Data - User data from Redis (can be regular or tournament)
+ * @param {Object} player2Data - User data from Redis (can be regular or tournament)
+ * @param {Socket} player1Socket
+ * @param {Socket} player2Socket
+ * @param {Server} io
+ */
 async function initiateMatch(player1Data, player2Data, player1Socket, player2Socket, io) {
-    const { userId: userId1, variant, subvariant } = player1Data;
+    const { userId: userId1 } = player1Data;
     const { userId: userId2 } = player2Data;
 
-    console.log(`[initiateMatch] Initiating game between ${userId1} and ${userId2} for ${variant} ${subvariant}`);
+    // Determine if player1 or player2 is from a tournament queue
+    const player1IsTournament = !!player1Data.tournamentId;
+    const player2IsTournament = !!player2Data.tournamentId;
 
-    // Atomically remove both players from their respective queues
-    // This logic needs to be careful: player1Data and player2Data can come from either
-    // the regular queue (`queueuser:`) or the tournament queue (`tournament:{id}:user:`)
-    const player1IsTournament = player1Data.tournamentId;
-    const player2IsTournament = player2Data.tournamentId;
+    // --- Determine the game variant and subvariant ---
+    // If one player is tournament and the other is regular, the game variant should align with the regular player's queue.
+    // If both are regular, it uses player1's. If both are tournament, it uses player1's (tournament rules).
+    let gameVariant;
+    let gameSubvariant;
 
-    if (player1IsTournament) {
-        const activeTournament = await getActiveTournamentDetails();
-        if (activeTournament) {
-            await redisClient.zRem(TOURNAMENT_QUEUE_KEY, userId1);
-            await redisClient.del(TOURNAMENT_USER_DATA_KEY(activeTournament.id, userId1));
-        }
+    if (player1IsTournament && !player2IsTournament) {
+        // Tournament player matched with regular player -> use regular player's variant
+        gameVariant = player2Data.variant;
+        gameSubvariant = player2Data.subvariant;
+        console.log(`[initiateMatch] Cross-queue match (T vs R). Game variant: ${gameVariant} ${gameSubvariant}`);
+    } else if (!player1IsTournament && player2IsTournament) {
+        // Regular player matched with tournament player -> use regular player's variant
+        gameVariant = player1Data.variant; // Player1 is the regular player here
+        gameSubvariant = player1Data.subvariant;
+        console.log(`[initiateMatch] Cross-queue match (R vs T). Game variant: ${gameVariant} ${gameSubvariant}`);
     } else {
-        await redisClient.zRem(queueKey(variant), userId1);
-        await redisClient.del(userKey(userId1));
+        // Both are regular OR both are tournament -> use player1's variant
+        gameVariant = player1Data.variant;
+        gameSubvariant = player1Data.subvariant;
+        console.log(`[initiateMatch] Same-queue match. Game variant: ${gameVariant} ${gameSubvariant}`);
     }
 
-    if (player2IsTournament) {
-        const activeTournament = await getActiveTournamentDetails();
-        if (activeTournament) {
-            await redisClient.zRem(TOURNAMENT_QUEUE_KEY, userId2);
-            await redisClient.del(TOURNAMENT_USER_DATA_KEY(activeTournament.id, userId2));
-        }
-    } else {
-        await redisClient.zRem(queueKey(variant), userId2);
-        await redisClient.del(userKey(userId2));
-    }
+    console.log(`[initiateMatch] Initiating game between ${userId1} and ${userId2} for ${gameVariant} ${gameSubvariant}`);
 
+    // --- Atomically remove both players from their respective queues ---
+    const cleanupPlayer = async (userData, isTournament) => {
+        if (isTournament) {
+            const activeTournament = await getActiveTournamentDetails(); // Need to fetch again for safety
+            if (activeTournament && userData.tournamentId === activeTournament.id) {
+                await redisClient.zRem(TOURNAMENT_QUEUE_KEY, userData.userId);
+                await redisClient.del(TOURNAMENT_USER_DATA_KEY(activeTournament.id, userData.userId));
+            } else {
+                // If tournament data is stale or tournament ended, just try to remove from general tournament queue
+                await redisClient.zRem(TOURNAMENT_QUEUE_KEY, userData.userId);
+            }
+        } else {
+            const specificQueueKey = userData.variant === 'classic' ? `queue:classic:${userData.subvariant}` : `queue:${userData.variant}`;
+            await redisClient.zRem(specificQueueKey, userData.userId);
+            await redisClient.del(userKey(userData.userId));
+        }
+        console.log(`[initiateMatch] Cleaned up ${userData.userId} from ${isTournament ? 'tournament' : 'regular'} queue.`);
+    };
+
+    await cleanupPlayer(player1Data, player1IsTournament);
+    await cleanupPlayer(player2Data, player2IsTournament);
+
+
+    // Apply cooldown
     await redisClient.set(cooldownKey(userId1), Date.now() + REJOIN_COOLDOWN, { EX: REJOIN_COOLDOWN / 1000 });
     await redisClient.set(cooldownKey(userId2), Date.now() + REJOIN_COOLDOWN, { EX: REJOIN_COOLDOWN / 1000 });
 
@@ -95,48 +145,50 @@ async function initiateMatch(player1Data, player2Data, player1Socket, player2Soc
         return;
     }
 
-    const p1Rating = variant === 'classic' ? userDoc1.ratings?.classic?.[subvariant] : userDoc1.ratings?.[getRatingField(variant)];
-    const p2Rating = variant === 'classic' ? userDoc2.ratings?.classic?.[subvariant] : userDoc2.ratings?.[getRatingField(variant)];
+    // Get ratings based on the determined gameVariant
+    const p1Rating = gameVariant === 'classic' && gameSubvariant ? userDoc1.ratings?.classic?.[gameSubvariant] : userDoc1.ratings?.[getRatingField(gameVariant)];
+    const p2Rating = gameVariant === 'classic' && gameSubvariant ? userDoc2.ratings?.classic?.[gameSubvariant] : userDoc2.ratings?.[getRatingField(gameVariant)];
+
 
     const player1 = {
         userId: userDoc1._id.toString(),
         username: userDoc1.name,
-        rating: p1Rating,
+        rating: p1Rating || 1200, // Default if rating is undefined
     };
 
     const player2 = {
         userId: userDoc2._id.toString(),
         username: userDoc2.name,
-        rating: p2Rating,
+        rating: p2Rating || 1200, // Default if rating is undefined
     };
 
     const { sessionId, gameState } = await createGameSession(
         player1,
         player2,
-        variant.toLowerCase(),
-        subvariant,
+        gameVariant.toLowerCase(),
+        gameSubvariant,
     );
 
-    console.log(`[initiateMatch] Created game session: ${sessionId}, gameState:`, gameState);
+    console.log(`[initiateMatch] Created game session: ${sessionId}`);
 
     player1Socket.emit('queue:matched', {
         opponent: { userId: userDoc2._id, name: userDoc2.name },
-        variant,
+        variant: gameVariant,
         sessionId,
         gameState,
-        subvariant,
-        tournamentMatch: !!player1IsTournament // Indicate if this was a tournament match
+        subvariant: gameSubvariant,
+        tournamentMatch: player1IsTournament && player2IsTournament // Only true if both are tournament players
     });
     player2Socket.emit('queue:matched', {
         opponent: { userId: userDoc1._id, name: userDoc1.name },
-        variant,
+        variant: gameVariant,
         sessionId,
         gameState,
-        subvariant,
-        tournamentMatch: !!player2IsTournament // Indicate if this was a tournament match
+        subvariant: gameSubvariant,
+        tournamentMatch: player1IsTournament && player2IsTournament // Only true if both are tournament players
     });
 
-    console.log(`[Matched] Successfully matched user ${userId1} with ${userId2} in ${variant}`);
+    console.log(`[Matched] Successfully matched user ${userId1} with ${userId2} in ${gameVariant} (P1 is T: ${player1IsTournament}, P2 is T: ${player2IsTournament})`);
 }
 
 
@@ -159,16 +211,18 @@ export async function joinQueue({ userId, socketId, variant, subvariant, io }) {
         }
 
         // Clean up any existing queue data for this user first from regular queues
+        // This function already iterates through VARIANTS which implies all regular queues.
         await cleanupUserFromAllQueues(userId);
+
         // Also ensure they are not in the tournament queue if they explicitly join a regular queue
         const activeTournament = await getActiveTournamentDetails();
         if (activeTournament) {
             const tournamentUser = await redisClient.hGetAll(TOURNAMENT_USER_DATA_KEY(activeTournament.id, userId));
             if (tournamentUser && tournamentUser.status === 'waiting') {
+                console.log(`[joinQueue] User ${userId} was in tournament queue, removing before joining regular queue.`);
                 await leaveTournament(userId, activeTournament.id);
             }
         }
-
 
         const userDoc = await UserModel.findById(userId);
         if (!userDoc) {
@@ -186,52 +240,60 @@ export async function joinQueue({ userId, socketId, variant, subvariant, io }) {
                 return;
             }
             rank = userDoc.ratings?.classic?.[subvariant];
-            if (rank === undefined) {
-                console.error(`[joinQueue] No rank for user ${userId} in Classic ${subvariant}`);
-                io.to(socketId).emit('queue:error', { message: `No rank found for Classic ${subvariant}` });
-                return;
+            // If classic rank is undefined, use default 1200
+            if (rank === undefined || rank === null) {
+                rank = 1200;
+                console.warn(`[joinQueue] No rank for user ${userId} in Classic ${subvariant}, using default ${rank}`);
             }
             ratingField = `classic.${subvariant}`;
         } else {
             ratingField = getRatingField(variant);
             rank = userDoc.ratings?.[ratingField];
-            if (rank === undefined) {
-                console.error(`[joinQueue] No rank for user ${userId} in variant ${variant}`);
-                io.to(socketId).emit('queue:error', { message: `No rank found for variant ${variant}` });
-                return;
+            // If variant rank is undefined, use default 1200
+            if (rank === undefined || rank === null) {
+                rank = 1200;
+                console.warn(`[joinQueue] No rank for user ${userId} in variant ${variant}, using default ${rank}`);
             }
         }
 
         const now = Date.now();
-        const score = rank + (now / 1e13);
+        const score = parseFloat(rank) + (now / 1e13); // Ensure rank is float for score calculation
 
         await redisClient.hSet(userKey(userId), {
             userId,
             socketId,
-            rank,
+            rank: rank.toString(), // Store as string
             variant,
             subvariant: subvariant || '',
-            joinTime: now,
+            joinTime: now.toString(), // Store as string
             status: 'waiting',
         });
 
-        await redisClient.zAdd(queueKey(variant), [{ score, value: userId }]);
-        console.log(`[joinQueue] User ${userId} added to queue for ${variant} with rank ${rank}`);
+        // Use the full queue key from REGULAR_QUEUE_KEYS_BY_VARIANT for zAdd
+        const fullQueueKey = variant === 'classic' ? REGULAR_QUEUE_KEYS_BY_VARIANT[`classic:${subvariant}`] : REGULAR_QUEUE_KEYS_BY_VARIANT[variant];
+        if (!fullQueueKey) {
+            console.error(`[joinQueue] Could not determine Redis queue key for variant: ${variant}, subvariant: ${subvariant}`);
+            io.to(socketId).emit('queue:error', { message: 'Failed to join queue: invalid variant/subvariant.' });
+            return;
+        }
+        await redisClient.zAdd(fullQueueKey, [{ score, value: userId }]);
+        console.log(`[joinQueue] User ${userId} added to regular queue ${fullQueueKey} with rank ${rank}`);
 
         // Try to match immediately when user joins
         try {
             const matchFound = await tryMatchRegularUser(userId, variant, io, true); // This is for regular users matching with other regular users
             if (!matchFound) {
+                // If no immediate rank-based match, try a broader search after a delay
                 setTimeout(async () => {
                     try {
-                        await tryMatchRegularUser(userId, variant, io, false);
+                        await tryMatchRegularUser(userId, variant, io, false); // Broader search
                     } catch (err) {
                         console.error(`[joinQueue] Error in tryMatchRegularUser (fallback) for user ${userId}:`, err);
                     }
                 }, RANK_WINDOW);
             }
         } catch (err) {
-            console.error(`[joinQueue] Error in tryMatchRegularUser (byRank) for user ${userId}:`, err);
+            console.error(`[joinQueue] Error in tryMatchRegularUser (initial) for user ${userId}:`, err);
         }
     } catch (err) {
         console.error(`[joinQueue] Unexpected error:`, err);
@@ -245,8 +307,9 @@ export async function joinQueue({ userId, socketId, variant, subvariant, io }) {
  */
 export async function cleanupUserFromAllQueues(userId) {
     try {
-        for (const variant of VARIANTS) {
-            await redisClient.zRem(queueKey(variant), userId);
+        // Iterate through all possible regular queue keys defined.
+        for (const key of Object.values(REGULAR_QUEUE_KEYS_BY_VARIANT)) {
+            await redisClient.zRem(key, userId);
         }
         await redisClient.del(userKey(userId));
         console.log(`[cleanupUserFromAllQueues] Cleaned up user ${userId} from all regular queues`);
@@ -260,9 +323,9 @@ export async function cleanupUserFromAllQueues(userId) {
  * This function is solely for matching regular queue users among themselves,
  * OR for matching them against tournament users.
  * @param {string} userId
- * @param {string} variant
+ * @param {string} variant - The variant the user is looking for (their preferred variant)
  * @param {Server} io
- * @param {boolean} byRank - true: closest rank, false: fallback random
+ * @param {boolean} byRank - true: closest rank, false: fallback random (broader search)
  * @returns {boolean} - true if match was found and completed, false otherwise
  */
 async function tryMatchRegularUser(userId, variant, io, byRank) {
@@ -280,47 +343,56 @@ async function tryMatchRegularUser(userId, variant, io, byRank) {
         return false;
     }
 
-    // --- Search in Regular Queue First ---
-    let queue;
+    // --- 1. Search in Regular Queue (Same Variant/Subvariant) ---
+    // Use the specific queue key for the user's preferred variant/subvariant
+    const specificRegularQueueKey = user.variant === 'classic' ? REGULAR_QUEUE_KEYS_BY_VARIANT[`classic:${user.subvariant}`] : REGULAR_QUEUE_KEYS_BY_VARIANT[user.variant];
+
+    if (!specificRegularQueueKey) {
+        console.error(`[tryMatchRegularUser] Invalid specific regular queue key for variant: ${user.variant}, subvariant: ${user.subvariant}`);
+        return false;
+    }
+
+    let queueCandidates;
     if (byRank) {
         const userRank = parseFloat(user.rank);
         let range = 100;
-        const queueSize = await redisClient.zCard(queueKey(variant));
-        if (queueSize > 1000) range = 50;
-        if (Date.now() - parseInt(user.joinTime) > 5000) range *= 2;
-        queue = await redisClient.zRangeByScore(queueKey(variant), userRank - range, userRank + range);
+        const queueSize = await redisClient.zCard(specificRegularQueueKey);
+        if (queueSize > 1000) range = 50; // Smaller range for larger queues
+        if (Date.now() - parseInt(user.joinTime) > 5000) range *= 2; // Expand range over time
+        queueCandidates = await redisClient.zRangeByScore(specificRegularQueueKey, userRank - range, userRank + range);
     } else {
-        queue = await redisClient.zRange(queueKey(variant), 0, -1);
+        // If not by rank (i.e., broader search), just get all in this queue
+        queueCandidates = await redisClient.zRange(specificRegularQueueKey, 0, -1);
     }
 
-    queue = queue.filter((id) => id !== userId); // Filter out self
+    queueCandidates = queueCandidates.filter((id) => id !== userId); // Filter out self
 
     let validRegularCandidates = [];
-    for (const id of queue) {
+    for (const id of queueCandidates) {
         const other = await redisClient.hGetAll(userKey(id));
         if (other && other.status === 'waiting') {
-            if (variant === 'classic' && other.subvariant !== user.subvariant) {
-                continue; // Classic variant requires subvariant match
-            }
-            const otherSocket = io.sockets.get(other.socketId);
-            if (otherSocket) {
-                validRegularCandidates.push(id);
-            } else {
-                console.log(`[tryMatchRegularUser] Cleaning up disconnected user ${id}`);
-                await leaveQueue(id);
+            // Crucial: for regular-to-regular matches, always match exact variant and subvariant
+            // This implicitly filters for classic subvariants as well because specificRegularQueueKey already targets it.
+            if (other.variant === user.variant && other.subvariant === user.subvariant) {
+                const otherSocket = io.sockets.get(other.socketId);
+                if (otherSocket) {
+                    validRegularCandidates.push(other); // Push the full data object for easier access
+                } else {
+                    console.log(`[tryMatchRegularUser] Cleaning up disconnected user ${id}`);
+                    await leaveQueue(id);
+                }
             }
         }
     }
-    console.log(`[tryMatchRegularUser] Valid regular candidates for ${userId}:`, validRegularCandidates);
+    console.log(`[tryMatchRegularUser] Found ${validRegularCandidates.length} valid regular candidates for ${userId} in its specific queue.`);
+
 
     if (validRegularCandidates.length > 0) {
         let bestMatch = null;
         let minDiff = Infinity;
         const userRank = parseFloat(user.rank);
-        const userJoin = parseInt(user.joinTime);
 
-        for (const otherId of validRegularCandidates) {
-            const other = await redisClient.hGetAll(userKey(otherId));
+        for (const other of validRegularCandidates) {
             const otherRank = parseFloat(other.rank);
             const otherJoin = parseInt(other.joinTime);
             const diff = Math.abs(userRank - otherRank);
@@ -328,14 +400,15 @@ async function tryMatchRegularUser(userId, variant, io, byRank) {
             if (byRank) {
                 if (diff < minDiff || (diff === minDiff && otherJoin < (bestMatch?.joinTime || Infinity))) {
                     minDiff = diff;
-                    bestMatch = { ...other, userId: otherId, diff, joinTime: otherJoin };
+                    bestMatch = { ...other, diff, joinTime: otherJoin };
                 }
-            } else {
+            } else { // Broader search, prioritize oldest join time
                 if (!bestMatch || otherJoin < bestMatch.joinTime) {
-                    bestMatch = { ...other, userId: otherId, joinTime: otherJoin };
+                    bestMatch = { ...other, joinTime: otherJoin };
                 }
             }
         }
+
         if (bestMatch) {
             console.log(`[tryMatchRegularUser] Found regular queue match: ${userId} vs ${bestMatch.userId}`);
             await initiateMatch(user, bestMatch, userSocket, io.sockets.get(bestMatch.socketId), io);
@@ -343,71 +416,80 @@ async function tryMatchRegularUser(userId, variant, io, byRank) {
         }
     }
 
-    // --- Fallback: Search in Tournament Queue for this variant if no regular match found ---
-    console.log(`[tryMatchRegularUser] No regular match for ${userId}, checking tournament queue for ${user.variant} ${user.subvariant}`);
+    // --- 2. Fallback: Search in Tournament Queue for this regular user's variant/subvariant ---
+    // A regular user only falls back to the tournament queue if the tournament explicitly matches their variant.
+    console.log(`[tryMatchRegularUser] No regular-to-regular match for ${userId}, checking tournament queue for ${user.variant} ${user.subvariant}`);
     const activeTournament = await getActiveTournamentDetails();
     if (activeTournament) {
         const tournamentId = activeTournament.id;
+        // Fetch users from the tournament queue (could be optimized with ZRANGEBYSCORE by rank if needed)
         let tournamentCandidates = await redisClient.zRange(TOURNAMENT_QUEUE_KEY, 0, -1);
 
         for (const candidateId of tournamentCandidates) {
             const candidate = await redisClient.hGetAll(TOURNAMENT_USER_DATA_KEY(tournamentId, candidateId));
-            if (candidate && candidate.status === 'waiting' && candidate.variant === user.variant) {
-                if (user.variant === 'classic' && candidate.subvariant !== user.subvariant) {
-                    continue; // Classic variant requires subvariant match
-                }
-                const candidateSocket = io.sockets.get(candidate.socketId);
-                if (candidateSocket) {
-                    // Found a match with a tournament player!
-                    console.log(`[tryMatchRegularUser] Found cross-queue match: ${userId} (regular) vs ${candidateId} (tournament)`);
-                    await initiateMatch(user, candidate, userSocket, candidateSocket, io);
-                    return true;
-                } else {
-                    console.log(`[tryMatchRegularUser] Cleaning up disconnected tournament user ${candidateId}`);
-                    await leaveTournament(candidateId, tournamentId);
+            if (candidate && candidate.status === 'waiting' && candidate.tournamentId === tournamentId) {
+                // For cross-queue matches (regular user matching tournament user),
+                // ensure the tournament user's assigned game variant matches the regular user's desired variant.
+                if (candidate.variant === user.variant && candidate.subvariant === user.subvariant) {
+                    const candidateSocket = io.sockets.get(candidate.socketId);
+                    if (candidateSocket) {
+                        // Found a match with a tournament player!
+                        console.log(`[tryMatchRegularUser] Found cross-queue match: ${userId} (regular, ${user.variant} ${user.subvariant}) vs ${candidateId} (tournament, ${candidate.variant} ${candidate.subvariant})`);
+                        await initiateMatch(user, candidate, userSocket, candidateSocket, io); // Regular user (P1) vs Tournament user (P2)
+                        return true;
+                    } else {
+                        console.log(`[tryMatchRegularUser] Cleaning up disconnected tournament user ${candidateId}`);
+                        await leaveTournament(candidateId, tournamentId);
+                    }
                 }
             }
         }
     }
 
-    console.log(`[tryMatchRegularUser] No match found for regular user ${userId}`);
+    console.log(`[tryMatchRegularUser] No match found for regular user ${userId} after checking both queues.`);
     return false;
 }
 
 /**
  * Remove user from queue (on disconnect or manual leave)
- * EXPORTED for use by socket handlers.
+ * EXPORTED for use by socket handlers and other controllers.
  */
 export async function leaveQueue(userId) {
     try {
         const user = await redisClient.hGetAll(userKey(userId));
         if (!user) {
-            console.log(`[leaveQueue] User ${userId} not found in regular Redis queue.`);
+            console.log(`[leaveQueue] User ${userId} not found in regular Redis queue data.`);
+            // Attempt to remove from all regular queues just in case inconsistent state
+            await cleanupUserFromAllQueues(userId);
             return;
         }
 
-        // Remove from queue regardless of status
-        if (user.variant) {
-            await redisClient.zRem(queueKey(user.variant), userId);
+        // Remove from the specific queue they were in
+        const specificQueueKey = user.variant === 'classic' ? REGULAR_QUEUE_KEYS_BY_VARIANT[`classic:${user.subvariant}`] : REGULAR_QUEUE_KEYS_BY_VARIANT[user.variant];
+        if (specificQueueKey) {
+            await redisClient.zRem(specificQueueKey, userId);
+            console.log(`[leaveQueue] User ${userId} removed from regular queue: ${specificQueueKey}.`);
+        } else {
+            console.warn(`[leaveQueue] Could not determine specific queue key for user ${userId}. Attempting general cleanup.`);
         }
 
         // Clean up user data
         await redisClient.del(userKey(userId));
 
-        // Set cooldown only if they were actively waiting
+        // Set cooldown only if they were actively waiting (not if already matched/disconnected)
         if (user.status === 'waiting') {
             const cooldownUntil = Date.now() + REJOIN_COOLDOWN;
             await redisClient.set(cooldownKey(userId), cooldownUntil, { EX: REJOIN_COOLDOWN / 1000 });
         }
 
-        console.log(`[leaveQueue] User ${userId} removed from regular queue (was: ${user.status})`);
+        console.log(`[leaveQueue] User ${userId} cleanup completed (was: ${user.status}).`);
     } catch (err) {
         console.error(`[leaveQueue] Error for user ${userId}:`, err);
     }
 }
 
 /**
- * Handle socket disconnection for users in regular queues.
+ * Handle socket disconnection for users in regular queues and tournament queues.
  * EXPORTED for use by socket handlers.
  */
 export async function handleDisconnect(userId, socketId) {
@@ -419,6 +501,8 @@ export async function handleDisconnect(userId, socketId) {
         if (userInRegularQueue && userInRegularQueue.socketId === socketId) {
             await leaveQueue(userId);
             console.log(`[handleDisconnect] Removed user ${userId} from regular queue due to disconnect`);
+        } else {
+            console.log(`[handleDisconnect] User ${userId} not found in regular queue with matching socketId, or already removed.`);
         }
 
         // Also check if user is in tournament queue
@@ -429,6 +513,8 @@ export async function handleDisconnect(userId, socketId) {
             if (userInTournamentQueue && userInTournamentQueue.socketId === socketId) {
                 await leaveTournament(userId, tournamentId); // Use tournament specific leave
                 console.log(`[handleDisconnect] Removed user ${userId} from tournament queue due to disconnect`);
+            } else {
+                 console.log(`[handleDisconnect] User ${userId} not found in tournament queue with matching socketId, or already removed.`);
             }
         }
 
@@ -443,17 +529,19 @@ export async function handleDisconnect(userId, socketId) {
  */
 export async function cleanupIdleUsers() {
     try {
-        for (const variant of VARIANTS) {
-            const queue = await redisClient.zRange(queueKey(variant), 0, -1);
+        // Iterate through all actual queue keys, not just variants, to catch classic subvariants
+        for (const queueKeyString of Object.values(REGULAR_QUEUE_KEYS_BY_VARIANT)) {
+            const queue = await redisClient.zRange(queueKeyString, 0, -1);
             for (const userId of queue) {
                 const user = await redisClient.hGetAll(userKey(userId));
                 if (!user || user.status !== 'waiting') {
-                    await redisClient.zRem(queueKey(variant), userId);
+                    // If user data is missing or not in waiting, remove from queue
+                    await redisClient.zRem(queueKeyString, userId);
                     continue;
                 }
                 if (Date.now() - parseInt(user.joinTime) > IDLE_TIMEOUT) {
-                    await leaveQueue(userId);
-                    console.log(`[cleanupIdleUsers] Removed idle user ${userId} from ${variant} (regular queue)`);
+                    await leaveQueue(userId); // Use the unified leaveQueue
+                    console.log(`[cleanupIdleUsers] Removed idle user ${userId} from ${queueKeyString} (regular queue)`);
                 }
             }
         }

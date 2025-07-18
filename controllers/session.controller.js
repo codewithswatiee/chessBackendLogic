@@ -9,8 +9,8 @@ import { createInitialState as createBlitzInitialState } from '../validations/cl
 import { createInitialState as createBulletInitialState} from '../validations/classic/bullet.js';
 import { createInitialState as createSixPointerInitialState, generateRandomBalancedPosition } from '../validations/sixPointer.js';
 import { createDecayInitialState } from '../validations/decay.js';
-import { createInitialCrazyhouseState} from '../validations/crazyhouse/crazyhouseStandard.js';
-import { createInitialCrazyhouseWithTimerState } from '../validations/crazyhouse/crazyhouseTimer.js';
+import { createInitialCrazyhouseState as createCzyStndInitState} from '../validations/crazyhouse/crazyhouseStandard.js';
+import { createInitialCrazyhouseWithTimerState as createCzyTimerInitState } from '../validations/crazyhouse/crazyhouseTimer.js';
 
 // Game variants and their configurations
 const GAME_VARIANTS = {
@@ -592,7 +592,7 @@ function createInitialGameState(variant, subvariant, whitePlayer, blackPlayer) {
       }
     };
   } else if (variant === 'crazyhouse' && subvariant === 'standard') {
-    const initialState = createInitialCrazyhouseState();
+    const initialState = createCzyStndInitState();
     return {
       board: initialState, // or a dedicated sixPointer initial state if you have one
       sessionId: null,
@@ -673,7 +673,7 @@ function createInitialGameState(variant, subvariant, whitePlayer, blackPlayer) {
       }
     };
   } else if (variant === 'crazyhouse' && subvariant === 'withTimer') {
-    const initialState = createInitialCrazyhouseWithTimerState();
+    const initialState = createCzyTimerInitState();
     return {
       board: initialState, // or a dedicated sixPointer initial state if you have one
       sessionId: null,
