@@ -11,6 +11,8 @@ import { createInitialState as createSixPointerInitialState } from '../validatio
 import { createDecayInitialState } from '../validations/decay.js';
 import { createCrazyhouseStandardInitialState as createCzyStndInitState} from '../validations/crazyhouse/crazyhouseStandard.js';
 import { createCrazyhouseInitialState as createCzyTimerInitState } from '../validations/crazyhouse/crazyhouseTimer.js';
+import gameModel from '../models/game.model.js';
+import tournamentModel from '../models/tournament.model.js';
 
 // Game variants and their configurations
 const GAME_VARIANTS = {
@@ -168,7 +170,7 @@ function parseFen(fen) {
 /**
  * Create initial game state with comprehensive chess rules
  */
-function createInitialGameState(variant, subvariant, whitePlayer, blackPlayer) {
+function createInitialGameState(variant, subvariant, whitePlayer, blackPlayer, type) {
   const gameConfig = GAME_VARIANTS[variant].subvariants
     ? GAME_VARIANTS[variant].subvariants[subvariant]
     : GAME_VARIANTS[variant];
@@ -243,7 +245,7 @@ function createInitialGameState(variant, subvariant, whitePlayer, blackPlayer) {
       endedAt: null,
       rules: getChessRules(variant, subvariant),
       metadata: {
-        source: 'matchmaking',
+        source: type,
         rated: true,
         spectators: [],
         allowSpectators: true,
@@ -597,7 +599,7 @@ function createInitialGameState(variant, subvariant, whitePlayer, blackPlayer) {
       board: initialState, // or a dedicated sixPointer initial state if you have one
       sessionId: null,
       variantName: GAME_VARIANTS[variant].name,
-      subvariantName: null,
+      subvariantName: 'standard',
       description: "6-Point Chess: Each player gets 30 seconds per move, no base time.",
       players: {
         white: {
@@ -678,7 +680,7 @@ function createInitialGameState(variant, subvariant, whitePlayer, blackPlayer) {
       board: initialState, // or a dedicated sixPointer initial state if you have one
       sessionId: null,
       variantName: GAME_VARIANTS[variant].name,
-      subvariantName: null,
+      subvariantName: 'withTimer',
       description: "6-Point Chess: Each player gets 30 seconds per move, no base time.",
       players: {
         white: {
@@ -1013,7 +1015,7 @@ function initializeTimers(gameState) {
   };
 }
 
-export async function createGameSession(player1, player2, variant, subvariant, customConfig = {}) {
+export async function createGameSession(player1, player2, variant, subvariant, type, customConfig = {}) {
   try {
     // Input validation
     console.log('Creating game session with players:', player1, player2);
@@ -1051,7 +1053,7 @@ export async function createGameSession(player1, player2, variant, subvariant, c
     const { whitePlayer, blackPlayer } = assignPlayerColors(player1, player2);
     
     // Create initial game state
-    const gameState = createInitialGameState(variant, subvariant, whitePlayer, blackPlayer);
+    const gameState = createInitialGameState(variant, subvariant, whitePlayer, blackPlayer, type);
     gameState.sessionId = sessionId;
     
     // Apply any custom configurations
@@ -1109,9 +1111,43 @@ export async function createGameSession(player1, player2, variant, subvariant, c
       timeControl: `${gameState.timeControl.baseTime/60000}+${gameState.timeControl.increment/1000}`
     });
 
-    // const updateGameData = await gameModel.findOneAndUpdate(
+    try{
+        if(type === 'battle'){
+          const gameData = new gameModel({
+            variant,
+            sessionId,
+            subvariant,
+            state: gameState.board,
+            players: {
+                white: player1.userId,
+                black: player2.userId
+            }
+          })
 
-    // )
+          await gameData.save();
+        } else if(type === 'tournament'){
+          const tournamentData = new tournamentModel({
+            variant,
+            sessionId,
+            subvariant,
+            matches: [
+              {
+                sessionId,
+                player1: player1.userId,
+                player2: player2.userId,
+                result: 'ongoing',
+                gameState: gameState.board
+              }
+            ]
+          })
+
+          await tournamentData.save();
+        }
+        console.log(`Game session created with ID: ${sessionId} & saved to database.`);
+    } catch(err){
+        player1Socket.emit('queue:error', { message: 'Failed to Create game.' });
+        player2Socket.emit('queue:error', { message: 'Failed to Create game.' });
+    }
     
     // Return session data for frontend
     return {

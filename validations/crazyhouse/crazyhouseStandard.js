@@ -192,6 +192,7 @@ function updateCrazyhouseStandardTimers(state, currentTimestamp) {
 }
 
 // Handle piece drop logic for Standard Crazyhouse (no timer checks)
+// Handle piece drop logic for Standard Crazyhouse (no timer checks)
 function handlePieceDropStandard(state, move, playerColor, game) {
   const pieceType = move.piece; // e.g., 'p', 'n', 'b', 'r', 'q'
   const targetSquare = move.to;
@@ -217,8 +218,47 @@ function handlePieceDropStandard(state, move, playerColor, game) {
   // Apply the drop
   try {
     game.put({ type: pieceType, color: playerColor === "white" ? "w" : "b" }, targetSquare);
+    
+    // IMPORTANT: Manually switch the turn after a drop
+    // Chess.js doesn't automatically switch turns when using put()
+    const newFen = game.fen();
+    const fenParts = newFen.split(' ');
+    
+    // Switch the active color (second part of FEN)
+    fenParts[1] = fenParts[1] === 'w' ? 'b' : 'w';
+    
+    // Increment the fullmove number if it was black's turn
+    if (playerColor === "black") {
+      fenParts[5] = (parseInt(fenParts[5]) + 1).toString();
+    }
+    
+    // Update the halfmove clock (reset to 0 for pawn drops, increment for others)
+    if (pieceType.toLowerCase() === 'p') {
+      fenParts[4] = '0';
+    } else {
+      fenParts[4] = (parseInt(fenParts[4]) + 1).toString();
+    }
+    
+    // Reconstruct the game with the corrected FEN
+    const correctedFen = fenParts.join(' ');
+    game.load(correctedFen);
+    
     playerPocket.splice(pieceIndexInPocket, 1); // Remove from pocket
-    return { valid: true, game: game };
+    
+    // Create a move-like result object for consistency with regular moves
+    const moveResult = {
+      from: "pocket",
+      to: targetSquare,
+      piece: pieceType,
+      color: playerColor === "white" ? "w" : "b",
+      captured: null,
+      promotion: null,
+      san: `${pieceType.toUpperCase()}@${targetSquare}`,
+      flags: "d", // 'd' for drop
+      drop: true
+    };
+    
+    return { valid: true, game: game, result: moveResult };
   } catch (error) {
     console.error("Chess.js put error during drop:", error);
     return { valid: false, reason: "Illegal drop: " + error.message, code: "CHESS_JS_ERROR" };

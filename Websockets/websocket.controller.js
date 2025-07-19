@@ -13,6 +13,8 @@ import {
   handleDisconnect,
 } from "../controllers/matchmaking.controller.js";
 import { createTournament, getActiveTournamentDetails, joinTournament, leaveTournament } from "../controllers/tournament.controller.js";
+import tournamentModel from "../models/tournament.model.js";
+import UserModel from "../models/User.model.js";
 
 dotenv.config();
 
@@ -195,7 +197,6 @@ const websocketRoutes = (io) => {
     // Make move
     socket.on("game:makeMove", async ({ move, timestamp }) => {
       try {
-        console.log("Received game:makeMove for user", userId, "session", sessionId, "move", move);
         const result = await makeMove({ sessionId, userId, move, timestamp, variant, subvariant });
         if (result && result.type === 'game:warning') {
           console.warn("Game warning:", result.message);
@@ -217,7 +218,53 @@ const websocketRoutes = (io) => {
         // --- MODIFICATION END ---
 
         if (gameState.status === 'finished') {
-          gameNamespace.to(sessionId).emit("game:end", { gameState });
+         if(gameState.metadata.source === 'tournament'){
+                        const updatedTournament = await tournamentModel.findOneAndUpdate({'matches.sessionId': sessionId}, {
+                                $set: {
+                                        'matches.$.result': gameState.result,
+                                        'matches.$.gameState': gameState.board
+                                        }
+                                }, { new: true });
+                        if(updatedTournament){
+                                console.log(`Tournament match updated for session ${sessionId} with result ${gameState.result}`);
+                                const winnerId = gameState.result === 'white' ? updatedTournament.player1 : updatedTournament.player2;
+                                const updatedUserPoints = await UserModel.findByIdAndUpdate({winnerId}, {
+                                        // will continue to update points based on your logic
+                                })
+                        }
+                } else if(gameState.metadata.source === 'matchmaking') {
+                        let incPoint = 0;
+                        if(variant === 'classic') {
+                                incPoint = 1
+                        } else if(variant === 'crazyhouse') {
+                                incPoint = 2
+                        } else if(variant === 'sixpointer') {
+                                incPoint = 3
+                        } else if(variant === 'decay') {
+                                incPoint = 3
+                        }
+                        const winnerId = gameState.winnerColor === 'white' ? gameState.players.white.userId : gameState.players.black.userId;
+                        const updateUser = await UserModel.findByIdAndUpdate(
+                                winnerId,
+                                {
+                                        $inc: {
+                                        ratings: incPoint,
+                                },
+                                },
+                        { new: true } 
+                        );
+
+
+                        if(!updateUser) {
+                                console.error(`Failed to update user points for winner ${winnerId}`);
+                                gameNamespace.to(sessionId).emit("game:error", { message: "Failed to update user points." });
+                        }
+                        console.log(`User ${winnerId} points updated by ${incPoint} points.`);
+                }
+
+                gameNamespace.to(sessionId).emit("game:end", { gameState });
+               
+                
         }
       } catch (err) {
         gameNamespace.to(sessionId).emit("game:error", { message: err.message });
@@ -228,7 +275,6 @@ const websocketRoutes = (io) => {
     socket.on("game:getPossibleMoves", async ({ square }) => {
       try {
         const moves = await getPossibleMoves({ sessionId, square, variant, subvariant });
-        console.log("Possible moves for square", square, ":", moves);
         gameNamespace.to(sessionId).emit("game:possibleMoves", { square, moves });
       } catch (err) {
         gameNamespace.to(sessionId).emit("game:error", { message: err.message });

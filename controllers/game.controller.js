@@ -23,8 +23,6 @@ export async function makeMove({ sessionId, userId, move, timestamp, variant , s
 
   let gameState = session.gameState; // Use a mutable copy if desired, but direct modification is fine here as it's saved later
 
-  console.log("Current game state (before move processing):", gameState);
-
   const color = (gameState.players.white.userId === userId) ? 'white' : (gameState.players.black.userId === userId) ? 'black' : null;
   if (!color) return { type: 'game:error', message: 'User not a player in this game' };
 
@@ -132,17 +130,19 @@ export async function makeMove({ sessionId, userId, move, timestamp, variant , s
 
   // For Crazyhouse variants, you need to pass the pocketedPieces for legal moves
   let possibleMoves;
-  if (variant === 'crazyhouse') {
+  if (variant === 'crazyhouse' && subvariant === 'standard') {
     possibleMoves = legalMovesFunc(gameState.board.fen, gameState.board.pocketedPieces, color);
+  } else if (variant === 'crazyhouse' && subvariant === 'withTimer') {
+    possibleMoves = legalMovesFunc(gameState.board.fen, gameState.board.pocketedPieces, gameState.board.dropTimers, color);
   } else {
-    possibleMoves = legalMovesFunc(gameState.board.fen);
-  }
+        possibleMoves = legalMovesFunc(gameState.board.fen);
+}
 
   console.log("Moves received:", move);
   // Filtering legal moves for a specific 'from' square is only relevant for board moves, not drops
   const isMoveLegal = possibleMoves && possibleMoves.some(m =>
     (m.from === move.from && m.to === move.to && (!m.promotion || m.promotion === move.promotion)) ||
-    (move.type === 'drop' && m.from === 'pocket' && m.to === move.to && m.piece === move.piece)
+    (move.drop === true && m.from === 'pocket' && m.to === move.to && m.piece === move.piece)
   );
 
   if (!isMoveLegal) {
@@ -188,8 +188,8 @@ export async function makeMove({ sessionId, userId, move, timestamp, variant , s
   if (variant === 'sixpointer') {
     resetSixPointerTimer(gameState); // This function should reset both timers to 30s.
     // Sync the board's time properties with the timers
-    gameState.board.whiteTime = gameState.board.timers.white.remaining;
-    gameState.board.blackTime = gameState.board.timers.black.remaining;
+    gameState.board.whiteTime = 30000;
+    gameState.board.blackTime = 30000;
   }
 
 

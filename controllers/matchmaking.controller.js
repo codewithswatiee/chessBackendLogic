@@ -11,6 +11,7 @@ import {
     getActiveTournamentDetails,
     leaveTournament, // We will use this to clean up tournament users if they get matched
 } from './tournament.controller.js';
+import gameModel from '../models/game.model.js';
 
 // --- NEW EXPORTS FOR TOURNAMENT CONTROLLER ---
 // Define and export these here for use in tournament.controller.js
@@ -42,18 +43,6 @@ const RANK_WINDOW = 10 * 1000;
 // };
 const userKey = (userId) => `queueuser:${userId}`; // For regular queue users
 const cooldownKey = (userId) => `cooldown:${userId}`;
-
-// Helper: get rating field for variant
-export function getRatingField(variant) { // Export this for use in tournament.controller.js
-    switch (variant) {
-        case 'crazyhouse': return 'crazyhouse';
-        case 'sixpointer': return 'sixPoint';
-        case 'decay': return 'decayChess';
-        case 'classic': return 'classic';
-        default: throw new Error('Unknown variant');
-    }
-}
-
 /**
  * Helper: Centralized match initiation function
  * This function is now more robust to determine the game variant and clean up queues.
@@ -148,20 +137,20 @@ async function initiateMatch(player1Data, player2Data, player1Socket, player2Soc
     }
 
     // Get ratings based on the determined gameVariant
-    const p1Rating = gameVariant === 'classic' && gameSubvariant ? userDoc1.ratings?.classic?.[gameSubvariant] : userDoc1.ratings?.[getRatingField(gameVariant)];
-    const p2Rating = gameVariant === 'classic' && gameSubvariant ? userDoc2.ratings?.classic?.[gameSubvariant] : userDoc2.ratings?.[getRatingField(gameVariant)];
+    const p1Rating = userDoc1.ratings
+    const p2Rating = userDoc2.ratings
 
 
     const player1 = {
         userId: userDoc1._id.toString(),
         username: userDoc1.name,
-        rating: p1Rating || 1200, // Default if rating is undefined
+        rating: p1Rating
     };
 
     const player2 = {
         userId: userDoc2._id.toString(),
         username: userDoc2.name,
-        rating: p2Rating || 1200, // Default if rating is undefined
+        rating: p2Rating 
     };
 
     const { sessionId, gameState } = await createGameSession(
@@ -169,7 +158,8 @@ async function initiateMatch(player1Data, player2Data, player1Socket, player2Soc
         player2,
         gameVariant.toLowerCase(),
         gameSubvariant,
-    );
+        'battle'
+    );    
 
     console.log(`[initiateMatch] Created game session: ${sessionId}`);
 
@@ -189,6 +179,8 @@ async function initiateMatch(player1Data, player2Data, player1Socket, player2Soc
         subvariant: gameSubvariant,
         tournamentMatch: player1IsTournament && player2IsTournament // Only true if both are tournament players
     });
+
+
 
     console.log(`[Matched] Successfully matched user ${userId1} with ${userId2} in ${gameVariant} (P1 is T: ${player1IsTournament}, P2 is T: ${player2IsTournament})`);
 }
@@ -233,29 +225,11 @@ export async function joinQueue({ userId, socketId, variant, subvariant, io }) {
             return;
         }
 
-        let rank;
-        let ratingField;
-        if (variant === 'classic') {
-            if (!subvariant || (subvariant !== 'blitz' && subvariant !== 'bullet' && subvariant !== 'standard')) {
-                console.error(`[joinQueue] Invalid or missing subvariant for Classic: ${subvariant}`);
-                io.to(socketId).emit('queue:error', { message: 'Invalid or missing subvariant for Classic (must be blitz, bullet, or standard).' });
-                return;
-            }
-            rank = userDoc.ratings?.classic?.[subvariant];
-            // If classic rank is undefined, use default 1200
-            if (rank === undefined || rank === null) {
-                rank = 1200;
-                console.warn(`[joinQueue] No rank for user ${userId} in Classic ${subvariant}, using default ${rank}`);
-            }
-            ratingField = `classic.${subvariant}`;
-        } else {
-            ratingField = getRatingField(variant);
-            rank = userDoc.ratings?.[ratingField];
-            // If variant rank is undefined, use default 1200
-            if (rank === undefined || rank === null) {
-                rank = 1200;
-                console.warn(`[joinQueue] No rank for user ${userId} in variant ${variant}, using default ${rank}`);
-            }
+        let rank = userDoc.ratings
+        // If variant rank is undefined, use default 1200
+        if (rank === undefined || rank === null) {
+            rank = 1200;
+            console.warn(`[joinQueue] No rank for user ${userId} in variant ${variant}, using default ${rank}`);
         }
 
         const now = Date.now();

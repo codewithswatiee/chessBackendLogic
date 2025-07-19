@@ -192,6 +192,15 @@ export function createInitialState() {
       winner: null,
       endTimestamp: null,
       variant: "6pt",
+      // New fields for updated rules
+      bonusMoves: {
+        white: 0,
+        black: 0,
+      },
+      timeoutPenalties: {
+        white: 0,
+        black: 0,
+      },
     }
   } catch (error) {
     console.error("Error creating 6PT Chess initial state:", error)
@@ -199,15 +208,40 @@ export function createInitialState() {
   }
 }
 
-// 6PT Chess: Check for foul play on final move
-function checkFoulPlay(state, game, move, playerColor) {
-  // Get move counts
+// 6PT Chess: Check if opponent can legally recapture on the target square
+function canOpponentRecapture(game, targetSquare, opponentColor) {
+  try {
+    // Get all legal moves for opponent
+    const opponentMoves = game.moves({ verbose: true })
+    
+    // Check if any move captures on the target square
+    return opponentMoves.some(move => 
+      move.to === targetSquare && 
+      move.flags && 
+      move.flags.includes('c') // capture flag
+    )
+  } catch (error) {
+    console.error("Error checking recapture possibility:", error)
+    return false
+  }
+}
+
+// 6PT Chess: Check for capture on final move and award bonus move if needed
+function checkCaptureOnFinalMove(state, game, move, playerColor) {
+  // Get move counts including bonus moves
   const whiteMovesPlayed = state.movesPlayed?.white || 0
   const blackMovesPlayed = state.movesPlayed?.black || 0
+  const whiteBonusMoves = state.bonusMoves?.white || 0
+  const blackBonusMoves = state.bonusMoves?.black || 0
+  
+  const whiteTotalMoves = whiteMovesPlayed + whiteBonusMoves
+  const blackTotalMoves = blackMovesPlayed + blackBonusMoves
 
-  // Check if this is the player's final (6th) move
-  const isPlayersFinalMove =
-    (playerColor === "white" && whiteMovesPlayed >= 5) || (playerColor === "black" && blackMovesPlayed >= 5)
+  // Check if this is the player's final move (6th move including bonuses)
+  const isPlayersFinalMove = (
+    (playerColor === "white" && whiteTotalMoves >= 5) || 
+    (playerColor === "black" && blackTotalMoves >= 5)
+  )
 
   if (!isPlayersFinalMove) return false
 
@@ -217,19 +251,63 @@ function checkFoulPlay(state, game, move, playerColor) {
 
   if (!capturedPiece) return false
 
-  // Check if opponent has moves left and can recapture
-  const opponentColor = playerColor === "white" ? "black" : "white"
-  const opponentMovesLeft = opponentColor === "white" ? 6 - whiteMovesPlayed : 6 - blackMovesPlayed
+  console.log(`${playerColor} captured ${capturedPiece.type} on final move!`)
 
-  if (opponentMovesLeft <= 0) {
-    // Opponent has no moves left to recapture - this is foul play
-    console.log(`FOUL PLAY DETECTED: ${playerColor} captured on final move with no opponent moves left`)
+  // Create a temporary game state to check opponent's recapture possibilities
+  const tempGame = new Chess(game.fen())
+  tempGame.move(move)
+
+  const opponentColor = playerColor === "white" ? "black" : "white"
+  const opponentTotalMoves = opponentColor === "white" ? whiteTotalMoves : blackTotalMoves
+  const opponentMovesLeft = 6 - opponentTotalMoves
+
+  // Check if opponent can legally recapture
+  const canRecapture = canOpponentRecapture(tempGame, targetSquare, opponentColor)
+
+  if (canRecapture && opponentMovesLeft <= 0) {
+    // Award one bonus move to opponent for fair recapture opportunity
+    if (!state.bonusMoves) state.bonusMoves = { white: 0, black: 0 }
+    state.bonusMoves[opponentColor]++
+    
+    console.log(`BONUS MOVE AWARDED: ${opponentColor} gets 1 extra move for recapture opportunity`)
     return true
   }
 
   return false
 }
 
+// Handle timeout penalty - deduct 1 point and pass turn
+function handleTimeoutPenalty(state, playerColor, currentTimestamp) {
+  console.log(`TIMEOUT PENALTY: ${playerColor} loses 1 point for running out of time`)
+  
+  // Initialize penalty tracking if needed
+  if (!state.timeoutPenalties) {
+    state.timeoutPenalties = { white: 0, black: 0 }
+  }
+  
+  // Deduct 1 point for timeout
+  if (!state.points) state.points = { white: 0, black: 0 }
+  state.points[playerColor] = Math.max(0, state.points[playerColor] - 1)
+  state.timeoutPenalties[playerColor]++
+  
+  // Reset timer to 30 seconds and pass turn
+  if (playerColor === "white") {
+    state.whiteTime = 30000 // Reset to 30 seconds
+  } else {
+    state.blackTime = 30000 // Reset to 30 seconds
+  }
+  
+  state.turnStartTimestamp = currentTimestamp
+  
+  console.log(`${playerColor} time reset to 30 seconds. Current points:`, state.points)
+  
+  return {
+    penaltyApplied: true,
+    pointsDeducted: 1,
+    timeReset: true,
+    newPoints: state.points[playerColor]
+  }
+}
 
 export function resetSixPointerTimer(gameState) {
     // The activeColor is the player who just moved, so switch to the next player
@@ -240,13 +318,13 @@ export function resetSixPointerTimer(gameState) {
     console.log(`Resetting timer for ${nextColor}. New time: ${gameState.timers[nextColor].remaining}ms`);
 }
 
-
 // Validate a move and update timers properly for 6PT Chess
 export function validateAndApplyMove(state, move, playerColor, currentTimestamp) {
   try {
     console.log("=== 6PT CHESS MOVE VALIDATION START ===")
     console.log("Move:", move, "Player:", playerColor)
     console.log("Moves played:", state.movesPlayed)
+    console.log("Bonus moves:", state.bonusMoves)
     console.log("Current points:", state.points)
 
     // Validate input parameters
@@ -276,7 +354,9 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
 
     // Initialize 6PT Chess specific fields if missing
     if (!state.movesPlayed) state.movesPlayed = { white: 0, black: 0 }
+    if (!state.bonusMoves) state.bonusMoves = { white: 0, black: 0 }
     if (!state.points) state.points = { white: 0, black: 0 }
+    if (!state.timeoutPenalties) state.timeoutPenalties = { white: 0, black: 0 }
     if (!state.maxMoves) state.maxMoves = 6
     if (!state.variant) state.variant = "6pt"
 
@@ -297,54 +377,14 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
     // Initialize timer values if missing
     if (typeof state.turnStartTimestamp !== "number") state.turnStartTimestamp = currentTimestamp
     if (typeof state.lastMoveTimestamp !== "number") state.lastMoveTimestamp = currentTimestamp
-    if (typeof state.whiteTime !== "number") state.whiteTime = 600000
-    if (typeof state.blackTime !== "number") state.blackTime = 600000
+    if (typeof state.whiteTime !== "number") state.whiteTime = 30000
+    if (typeof state.blackTime !== "number") state.blackTime = 30000
     if (!state.moveHistory) state.moveHistory = []
     if (!state.repetitionMap) state.repetitionMap = new Map()
     if (typeof state.gameStarted !== "boolean") state.gameStarted = false
     if (!state.firstMoveTimestamp) state.firstMoveTimestamp = null
     if (!state.capturedPieces) state.capturedPieces = { white: [], black: [] }
     if (typeof state.gameEnded !== "boolean") state.gameEnded = false
-
-    // Check for time-based game ending BEFORE processing the move
-    if (state.whiteTime <= 0) {
-      state.gameEnded = true
-      state.endReason = "timeout"
-      state.winnerColor = "black"
-      state.winner = null
-      state.endTimestamp = currentTimestamp
-      return {
-        valid: false,
-        reason: "White ran out of time",
-        result: "timeout",
-        winnerColor: "black",
-        winner: null,
-        gameEnded: true,
-        endReason: "timeout",
-        shouldNavigateToMenu: true,
-        endTimestamp: currentTimestamp,
-        code: "WHITE_TIMEOUT",
-      }
-    }
-    if (state.blackTime <= 0) {
-      state.gameEnded = true
-      state.endReason = "timeout"
-      state.winnerColor = "white"
-      state.winner = null
-      state.endTimestamp = currentTimestamp
-      return {
-        valid: false,
-        reason: "Black ran out of time",
-        result: "timeout",
-        winnerColor: "white",
-        winner: null,
-        gameEnded: true,
-        endReason: "timeout",
-        shouldNavigateToMenu: true,
-        endTimestamp: currentTimestamp,
-        code: "BLACK_TIMEOUT",
-      }
-    }
 
     // Get the current player BEFORE making the move
     const currentPlayerBeforeMove = game.turn() // 'w' or 'b'
@@ -355,12 +395,23 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
       return { valid: false, reason: "Not your turn", code: "WRONG_TURN" }
     }
 
-    // 6PT Chess: Check if player has exceeded move limit
+    // Check for timeout and apply penalty instead of ending game
+    let timeoutPenalty = null
+    if (state.whiteTime <= 0 && playerColor === "white") {
+      timeoutPenalty = handleTimeoutPenalty(state, "white", currentTimestamp)
+    } else if (state.blackTime <= 0 && playerColor === "black") {
+      timeoutPenalty = handleTimeoutPenalty(state, "black", currentTimestamp)
+    }
+
+    // 6PT Chess: Check if player has exceeded move limit (including bonus moves)
     const playerMovesPlayed = state.movesPlayed[playerColor] || 0
-    if (playerMovesPlayed >= state.maxMoves) {
+    const playerBonusMoves = state.bonusMoves[playerColor] || 0
+    const totalMovesAllowed = state.maxMoves + playerBonusMoves
+    
+    if (playerMovesPlayed >= totalMovesAllowed) {
       return {
         valid: false,
-        reason: `${playerColor} has already played ${state.maxMoves} moves`,
+        reason: `${playerColor} has already played ${totalMovesAllowed} moves (${state.maxMoves} regular + ${playerBonusMoves} bonus)`,
         code: "MOVE_LIMIT_EXCEEDED",
       }
     }
@@ -372,71 +423,26 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
       state.firstMoveTimestamp = currentTimestamp
       state.turnStartTimestamp = currentTimestamp
       state.lastMoveTimestamp = currentTimestamp
-    } else {
+    } else if (!timeoutPenalty) {
+      // Only deduct time if no timeout penalty was applied
       // Calculate elapsed time since the turn started
       const elapsed = currentTimestamp - state.turnStartTimestamp
       console.log("Elapsed time since turn started:", elapsed, "ms")
 
       // Deduct time from the player who is making the move
       if (currentPlayerBeforeMove === "w") {
-        const newWhiteTime = Math.max(0, state.whiteTime - elapsed)
-        state.whiteTime = newWhiteTime
-        if (state.whiteTime <= 0) {
-          state.gameEnded = true
-          state.endReason = "timeout"
-          state.winnerColor = "black"
-          state.winner = null
-          state.endTimestamp = currentTimestamp
-          return {
-            valid: false,
-            reason: "Time out",
-            result: "timeout",
-            winnerColor: "black",
-            winner: null,
-            gameEnded: true,
-            endReason: "timeout",
-            shouldNavigateToMenu: true,
-            endTimestamp: currentTimestamp,
-            code: "WHITE_TIMEOUT_DURING_MOVE",
-          }
-        }
+        state.whiteTime = Math.max(0, state.whiteTime - elapsed)
       } else {
-        const newBlackTime = Math.max(0, state.blackTime - elapsed)
-        state.blackTime = newBlackTime
-        if (state.blackTime <= 0) {
-          state.gameEnded = true
-          state.endReason = "timeout"
-          state.winnerColor = "white"
-          state.winner = null
-          state.endTimestamp = currentTimestamp
-          return {
-            valid: false,
-            reason: "Time out",
-            result: "timeout",
-            winnerColor: "white",
-            winner: null,
-            gameEnded: true,
-            endReason: "timeout",
-            shouldNavigateToMenu: true,
-            endTimestamp: currentTimestamp,
-            code: "BLACK_TIMEOUT_DURING_MOVE",
-          }
-        }
+        state.blackTime = Math.max(0, state.blackTime - elapsed)
       }
     }
 
-    // 6PT Chess: Check for foul play before making the move
-    if (checkFoulPlay(state, game, move, playerColor)) {
-      return {
-        valid: false,
-        reason: "Foul play: Cannot capture on final move when opponent has no moves left",
-        code: "FOUL_PLAY",
-      }
-    }
-
-    // Check if this move captures a piece
+    // Check if the move captures a piece BEFORE making the move
     const targetSquare = move.to
     const capturedPiece = game.get(targetSquare)
+
+    // Check for capture on final move and award bonus move if needed
+    const bonusMoveAwarded = checkCaptureOnFinalMove(state, game, move, playerColor)
 
     // Validate and apply the move
     let result
@@ -533,9 +539,13 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
       endTimestamp: state.endTimestamp,
       // 6PT Chess specific info
       movesPlayed: state.movesPlayed,
+      bonusMoves: state.bonusMoves,
       maxMoves: state.maxMoves,
       points: state.points,
+      timeoutPenalties: state.timeoutPenalties,
       variant: state.variant,
+      timeoutPenalty: timeoutPenalty,
+      bonusMoveAwarded: bonusMoveAwarded,
     }
 
     console.log("=== 6PT CHESS MOVE VALIDATION END ===")
@@ -549,6 +559,8 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
       code: "SUCCESS",
       winnerColor: state.winnerColor,
       winner: state.winner,
+      timeoutPenalty: timeoutPenalty,
+      bonusMoveAwarded: bonusMoveAwarded,
       ...resultStatus,
     }
   } catch (error) {
@@ -563,15 +575,15 @@ export function validateAndApplyMove(state, move, playerColor, currentTimestamp)
   }
 }
 
-// Get current timer values (same as original but with 6PT awareness)
+// Get current timer values (updated for penalty system)
 export function getCurrentTimers(state, currentTimestamp) {
   try {
     // Validate input
     if (!state || typeof state !== "object") {
       console.error("[TIMER] Invalid state provided to getCurrentTimers")
       return {
-        white: 600000,
-        black: 600000,
+        white: 30000,
+        black: 30000,
         activeColor: "white",
         gameEnded: false,
         error: "Invalid state",
@@ -594,19 +606,23 @@ export function getCurrentTimers(state, currentTimestamp) {
         endTimestamp: state.endTimestamp,
         // 6PT Chess specific
         movesPlayed: state.movesPlayed,
+        bonusMoves: state.bonusMoves,
         points: state.points,
+        timeoutPenalties: state.timeoutPenalties,
         variant: state.variant,
       }
     }
 
     if (!state.gameStarted || !state.turnStartTimestamp || state.moveHistory.length === 0) {
       return {
-        white: state.whiteTime || 600000,
-        black: state.blackTime || 600000,
+        white: state.whiteTime || 30000,
+        black: state.blackTime || 30000,
         activeColor: state.activeColor || "white",
         gameEnded: false,
         movesPlayed: state.movesPlayed || { white: 0, black: 0 },
+        bonusMoves: state.bonusMoves || { white: 0, black: 0 },
         points: state.points || { white: 0, black: 0 },
+        timeoutPenalties: state.timeoutPenalties || { white: 0, black: 0 },
         variant: state.variant || "6pt",
       }
     }
@@ -618,8 +634,8 @@ export function getCurrentTimers(state, currentTimestamp) {
     } catch (error) {
       console.error("[TIMER] Error reconstructing game from FEN:", error)
       return {
-        white: state.whiteTime || 600000,
-        black: state.blackTime || 600000,
+        white: state.whiteTime || 30000,
+        black: state.blackTime || 30000,
         activeColor: state.activeColor || "white",
         gameEnded: false,
         error: "Invalid FEN",
@@ -630,8 +646,8 @@ export function getCurrentTimers(state, currentTimestamp) {
     const currentPlayerColor = currentPlayer === "w" ? "white" : "black"
     const elapsed = currentTimestamp - state.turnStartTimestamp
 
-    let whiteTime = state.whiteTime || 600000
-    let blackTime = state.blackTime || 600000
+    let whiteTime = state.whiteTime || 30000
+    let blackTime = state.blackTime || 30000
 
     // Only deduct time from the current player
     if (currentPlayer === "w") {
@@ -640,50 +656,7 @@ export function getCurrentTimers(state, currentTimestamp) {
       blackTime = Math.max(0, blackTime - elapsed)
     }
 
-    // Check for timeout
-    if (whiteTime <= 0) {
-      state.gameEnded = true
-      state.endReason = "timeout"
-      state.winnerColor = "black"
-      state.winner = null
-      state.endTimestamp = currentTimestamp
-      return {
-        white: 0,
-        black: blackTime,
-        activeColor: currentPlayerColor,
-        gameEnded: true,
-        endReason: "timeout",
-        winnerColor: "black",
-        winner: null,
-        shouldNavigateToMenu: true,
-        endTimestamp: currentTimestamp,
-        movesPlayed: state.movesPlayed,
-        points: state.points,
-        variant: state.variant,
-      }
-    }
-
-    if (blackTime <= 0) {
-      state.gameEnded = true
-      state.endReason = "timeout"
-      state.winnerColor = "white"
-      state.winner = null
-      state.endTimestamp = currentTimestamp
-      return {
-        white: whiteTime,
-        black: 0,
-        activeColor: currentPlayerColor,
-        gameEnded: true,
-        endReason: "timeout",
-        winnerColor: "white",
-        winner: null,
-        shouldNavigateToMenu: true,
-        endTimestamp: currentTimestamp,
-        movesPlayed: state.movesPlayed,
-        points: state.points,
-        variant: state.variant,
-      }
-    }
+    // Note: We don't end the game on timeout anymore, just apply penalty in validateAndApplyMove
 
     return {
       white: whiteTime,
@@ -691,19 +664,23 @@ export function getCurrentTimers(state, currentTimestamp) {
       activeColor: currentPlayerColor,
       gameEnded: false,
       movesPlayed: state.movesPlayed || { white: 0, black: 0 },
+      bonusMoves: state.bonusMoves || { white: 0, black: 0 },
       points: state.points || { white: 0, black: 0 },
+      timeoutPenalties: state.timeoutPenalties || { white: 0, black: 0 },
       variant: state.variant || "6pt",
     }
   } catch (error) {
     console.error("Error in getCurrentTimers:", error)
     return {
-      white: state?.whiteTime || 600000,
-      black: state?.blackTime || 600000,
+      white: state?.whiteTime || 30000,
+      black: state?.blackTime || 30000,
       activeColor: state?.activeColor || "white",
       gameEnded: false,
       error: error.message,
       movesPlayed: state?.movesPlayed || { white: 0, black: 0 },
+      bonusMoves: state?.bonusMoves || { white: 0, black: 0 },
       points: state?.points || { white: 0, black: 0 },
+      timeoutPenalties: state?.timeoutPenalties || { white: 0, black: 0 },
       variant: state?.variant || "6pt",
     }
   }
@@ -724,7 +701,7 @@ export function getLegalMoves(fen) {
   }
 }
 
-// 6PT Chess specific game status checker
+// 6PT Chess specific game status checker (updated for new rules)
 export function check6PTGameStatus(state, gameInstance) {
   try {
     // Validate input
@@ -750,12 +727,9 @@ export function check6PTGameStatus(state, gameInstance) {
 
     // Initialize 6PT fields if missing
     if (!state.movesPlayed) state.movesPlayed = { white: 0, black: 0 }
+    if (!state.bonusMoves) state.bonusMoves = { white: 0, black: 0 }
     if (!state.points) state.points = { white: 0, black: 0 }
     if (!state.maxMoves) state.maxMoves = 6
-
-    // Check for time-based wins first
-    if (state.whiteTime <= 0) return { result: "timeout", winnerColor: "black", reason: "white ran out of time" }
-    if (state.blackTime <= 0) return { result: "timeout", winnerColor: "white", reason: "black ran out of time" }
 
     // Check for checkmate - this automatically ends the game
     if (game.isCheckmate()) {
@@ -764,14 +738,24 @@ export function check6PTGameStatus(state, gameInstance) {
       return { result: "checkmate", winnerColor: winnerColor }
     }
 
-    // 6PT Chess: Check if both players have completed their 6 moves
-    const whiteMovesCompleted = state.movesPlayed.white >= state.maxMoves
-    const blackMovesCompleted = state.movesPlayed.black >= state.maxMoves
+    // 6PT Chess: Check if both players have completed their moves (including bonus moves)
+    const whiteMaxMoves = state.maxMoves + (state.bonusMoves.white || 0)
+    const blackMaxMoves = state.maxMoves + (state.bonusMoves.black || 0)
+    const whiteMovesCompleted = state.movesPlayed.white >= whiteMaxMoves
+    const blackMovesCompleted = state.movesPlayed.black >= blackMaxMoves
 
     if (whiteMovesCompleted && blackMovesCompleted) {
-      // Both players completed 6 moves - count points
+      // Both players completed their moves - count points
       const finalPoints = calculatePoints(state.capturedPieces)
-      console.log("6PT: Both players completed 6 moves. Final points:", finalPoints)
+      
+      // Apply timeout penalties to final score
+      if (state.timeoutPenalties) {
+        finalPoints.white -= state.timeoutPenalties.white
+        finalPoints.black -= state.timeoutPenalties.black
+      }
+      
+      console.log("6PT: Both players completed moves. Final points:", finalPoints)
+      console.log("Timeout penalties applied:", state.timeoutPenalties)
 
       if (finalPoints.white > finalPoints.black) {
         return { result: "points", winnerColor: "white", reason: "white won by points", finalPoints }
@@ -801,6 +785,7 @@ export function check6PTGameStatus(state, gameInstance) {
   }
 }
 
+
 // Standard game status checker (for compatibility)
 export function checkGameStatus(state, gameInstance) {
   // For 6PT Chess, use the specialized checker
@@ -828,9 +813,6 @@ export function checkGameStatus(state, gameInstance) {
         return { result: "ongoing", error: "Invalid FEN" }
       }
     }
-
-    if (state.whiteTime <= 0) return { result: "timeout", winnerColor: "black", reason: "white ran out of time" }
-    if (state.blackTime <= 0) return { result: "timeout", winnerColor: "white", reason: "black ran out of time" }
 
     if (game.isCheckmate()) {
       const winnerColor = game.turn() === "w" ? "black" : "white"

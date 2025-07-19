@@ -9,6 +9,7 @@ import http from "http";
 import { Server } from "socket.io";
 import authRoutes from "./router/auth.route.js";
 import websocketRoutes from "./Websockets/websocket.controller.js";
+import UserModel from "./models/User.model.js";
 
 dotenv.config();
 
@@ -66,6 +67,18 @@ app.get("/", (req, res) => {
 });
 
 app.use("/api/auth", authRoutes);
+app.use("/api/leaderboard",  async (req, res) => {
+  try {
+    const users = await UserModel.find({})
+      .sort({ ratings: -1 })  
+      .select('_id email name ratings');
+
+    res.status(200).json({ success: true, users });
+  } catch (err) {
+    console.error('[GET /users/ratings]', err);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
 
 
 // web-socket

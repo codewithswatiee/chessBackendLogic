@@ -2,21 +2,29 @@ import mongoose from "mongoose";
 
 const Tournament = new mongoose.Schema(
     {
-        _id: ObjectId,
         name: String,
         variant: String,
-        pointMode: Number | null,
-        participants: [ObjectId],
-        rounds: [{
-          roundNumber: Number,
-          matches: [{
-            player1: ObjectId,
-            player2: ObjectId,
-            gameId: ObjectId,
-            result: String
-          }]
+        matches: [{
+          player1: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "User"
+          },
+          player2: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "User"
+          },
+          sessionId: String, // For tracking game sessions
+          state: {
+            type: Object, // Game state object, can be customized as needed
+            default: {}
+          },
+          result: String,
+          winner: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "User",
+            default: null // null if ongoing
+          },
         }],
-        winner: ObjectId | null,
         status: String, // "upcoming", "ongoing", "completed"
         startedAt: Date,
         endedAt: Date

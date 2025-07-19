@@ -48,21 +48,6 @@ function getRandomVariantAndSubvariant() {
 }
 
 /**
- * Helper to get rating field for a given variant.
- * @param {string} variant
- * @returns {string} The corresponding rating field name in the user model.
- */
-function getRatingField(variant) {
-    switch (variant) {
-        case 'crazyhouse': return 'crazyhouse';
-        case 'sixpointer': return 'sixPoint';
-        case 'decay': return 'decayChess';
-        case 'classic': return 'classic';
-        default: throw new Error('Unknown variant');
-    }
-}
-
-/**
  * Creates a new tournament.
  * @param {Object} params - { name, capacity, startTime, duration, entryFee, prizePool }
  * @returns {string} The new tournament ID.
@@ -459,8 +444,8 @@ async function initiateMatch(player1Data, player2Data, player1Socket, player2Soc
     }
 
     // Determine the rating to use for each player based on the *gameVariant*
-    const player1Rating = gameVariant === 'classic' && gameSubvariant ? userDoc1.ratings?.classic?.[gameSubvariant] : userDoc1.ratings?.[getRatingField(gameVariant)];
-    const player2Rating = gameVariant === 'classic' && gameSubvariant ? userDoc2.ratings?.classic?.[gameSubvariant] : userDoc2.ratings?.[getRatingField(gameVariant)];
+    const player1Rating = userDoc1.ratings
+    const player2Rating = userDoc2.ratings
 
     const player1 = {
         userId: userDoc1._id.toString(),
@@ -480,6 +465,7 @@ async function initiateMatch(player1Data, player2Data, player1Socket, player2Soc
         player2,
         gameVariant.toLowerCase(),
         gameSubvariant.toLowerCase(),
+        'tournament'
     );
 
     console.log(`[initiateMatch] Created game session: ${sessionId}`);
