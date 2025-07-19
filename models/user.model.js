@@ -18,6 +18,14 @@ const User = new mongoose.Schema(
               type: Number,
               default: 0
             },
+            win: {
+              type: Number,
+              default: 0
+            },
+            lose: {
+              type: Number,
+              default: 0
+            },
             tournaments: [
               {
                 type: mongoose.Schema.Types.ObjectId,

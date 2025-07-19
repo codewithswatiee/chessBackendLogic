@@ -244,19 +244,34 @@ const websocketRoutes = (io) => {
                                 incPoint = 3
                         }
                         const winnerId = gameState.winnerColor === 'white' ? gameState.players.white.userId : gameState.players.black.userId;
-                        const updateUser = await UserModel.findByIdAndUpdate(
+                        const looserId = gameState.winnerColor === 'white' ? gameState.players.black.userId : gameState.players.white.userId;
+                        const updateWinner = await UserModel.findByIdAndUpdate(
                                 winnerId,
                                 {
                                         $inc: {
                                         ratings: incPoint,
+                                        win: 1,
                                 },
                                 },
                         { new: true } 
                         );
 
 
-                        if(!updateUser) {
+                        if(!updateWinner) {
                                 console.error(`Failed to update user points for winner ${winnerId}`);
+                                gameNamespace.to(sessionId).emit("game:error", { message: "Failed to update user points." });
+                        }
+
+                        const updateLooser = await UserModel.findByIdAndUpdate(
+                                looserId,
+                                {
+                                        $inc: {lose: 1}
+                                },
+                        { new: true }
+                        );
+
+                        if(!updateLooser) {
+                                console.error(`Failed to update user points for looser ${looserId}`);
                                 gameNamespace.to(sessionId).emit("game:error", { message: "Failed to update user points." });
                         }
                         console.log(`User ${winnerId} points updated by ${incPoint} points.`);

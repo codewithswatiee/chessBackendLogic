@@ -71,7 +71,7 @@ app.use("/api/leaderboard",  async (req, res) => {
   try {
     const users = await UserModel.find({})
       .sort({ ratings: -1 })  
-      .select('_id email name ratings');
+      .select('_id email name ratings win lose');
 
     res.status(200).json({ success: true, users });
   } catch (err) {
