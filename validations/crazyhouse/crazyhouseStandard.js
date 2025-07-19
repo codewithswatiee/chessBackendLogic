@@ -1,85 +1,94 @@
-import { Chess } from "chess.js"
+import { Chess } from "chess.js";
 
+// Helper: Validate ObjectId format (Keep existing)
 export function isValidObjectId(id) {
-  if (!id) return false
-  if (typeof id !== "string") return false
-  return /^[0-9a-fA-F]{24}$/.test(id)
+  if (!id) return false;
+  if (typeof id !== "string") return false;
+  return /^[0-9a-fA-F]{24}$/.test(id);
 }
 
+// Helper: Safely handle ObjectId operations (Keep existing)
 export function safeObjectId(id, fallback = null) {
   try {
-    if (!id) return fallback
+    if (!id) return fallback;
     if (typeof id === "string" && isValidObjectId(id)) {
-      return id
+      return id;
     }
     if (typeof id === "object" && id.toString && isValidObjectId(id.toString())) {
-      return id.toString()
+      return id.toString();
     }
-    console.warn("[ObjectId] Invalid ObjectId format:", id)
-    return fallback
+    console.warn("[ObjectId] Invalid ObjectId format:", id);
+    return fallback;
   } catch (error) {
-    console.error("[ObjectId] Error processing ObjectId:", error)
-    return fallback
+    console.error("[ObjectId] Error processing ObjectId:", error);
+    return fallback;
   }
 }
 
+// Helper: Validate and sanitize user data for database operations (Keep existing)
 export function sanitizeUserData(userData) {
   try {
     if (!userData || typeof userData !== "object") {
-      return null
+      return null;
     }
-    const sanitized = {}
 
+    const sanitized = {};
+
+    // Handle user ID
     if (userData.userId) {
-      const validUserId = safeObjectId(userData.userId)
+      const validUserId = safeObjectId(userData.userId);
       if (validUserId) {
-        sanitized.userId = validUserId
+        sanitized.userId = validUserId;
       } else {
-        console.warn("[SANITIZE] Invalid userId:", userData.userId)
-        return null
+        console.warn("[SANITIZE] Invalid userId:", userData.userId);
+        return null;
       }
     }
 
+    // Handle session ID
     if (userData.sessionId) {
-      const validSessionId = safeObjectId(userData.sessionId)
+      const validSessionId = safeObjectId(userData.sessionId);
       if (validSessionId) {
-        sanitized.sessionId = validSessionId
+        sanitized.sessionId = validSessionId;
       } else {
-        console.warn("[SANITIZE] Invalid sessionId:", userData.sessionId)
-        return null
+        console.warn("[SANITIZE] Invalid sessionId:", userData.sessionId);
+        return null;
       }
     }
 
-    const safeFields = ["username", "rating", "avatar", "title"]
+    // Copy other safe fields
+    const safeFields = ["username", "rating", "avatar", "title"];
     safeFields.forEach((field) => {
       if (userData[field] !== undefined) {
-        sanitized[field] = userData[field]
+        sanitized[field] = userData[field];
       }
-    })
+    });
 
-    return sanitized
+    return sanitized;
   } catch (error) {
-    console.error("[SANITIZE] Error sanitizing user data:", error)
-    return null
+    console.error("[SANITIZE] Error sanitizing user data:", error);
+    return null;
   }
 }
 
+// Helper: Safe database operation wrapper (Keep existing)
 export async function safeDatabaseOperation(operation, context = "unknown") {
   try {
-    console.log(`[DB] Starting ${context} operation`)
-    const result = await operation()
-    console.log(`[DB] Completed ${context} operation successfully`)
-    return { success: true, data: result }
+    console.log(`[DB] Starting ${context} operation`);
+    const result = await operation();
+    console.log(`[DB] Completed ${context} operation successfully`);
+    return { success: true, data: result };
   } catch (error) {
-    console.error(`[DB] Error in ${context} operation:`, error.message)
+    console.error(`[DB] Error in ${context} operation:`, error.message);
 
+    // Handle specific MongoDB errors
     if (error.name === "CastError" && error.path === "_id") {
       return {
         success: false,
         error: "Invalid ID format",
         code: "INVALID_OBJECT_ID",
         context: context,
-      }
+      };
     }
 
     if (error.name === "ValidationError") {
@@ -89,7 +98,7 @@ export async function safeDatabaseOperation(operation, context = "unknown") {
         code: "VALIDATION_ERROR",
         context: context,
         details: error.errors,
-      }
+      };
     }
 
     if (error.code === 11000) {
@@ -98,7 +107,7 @@ export async function safeDatabaseOperation(operation, context = "unknown") {
         error: "Duplicate key error",
         code: "DUPLICATE_KEY",
         context: context,
-      }
+      };
     }
 
     return {
@@ -106,17 +115,29 @@ export async function safeDatabaseOperation(operation, context = "unknown") {
       error: error.message || "Database operation failed",
       code: "DB_ERROR",
       context: context,
-    }
+    };
   }
 }
 
-// Create initial state for Crazyhouse Standard (3+2 time control)
-export function createInitialCrazyhouseState() {
+// --- Crazyhouse (Standard) Constants ---
+const BASE_TIME_STANDARD = 180000; // 3 minutes in ms
+const INCREMENT_TIME_STANDARD = 2000; // 2 seconds increment per move
+
+// Create initial state for a Crazyhouse (Standard) game
+export function createCrazyhouseStandardInitialState() {
   try {
-    const game = new Chess()
-    const fen = game.fen()
-    const [position, activeColor, castlingRights, enPassantSquare, halfmoveClock, fullmoveNumber] = fen.split(" ")
-    const now = Date.now()
+    const game = new Chess(); // default position
+    const fen = game.fen();
+    const [
+      position,
+      activeColor,
+      castlingRights,
+      enPassantSquare,
+      halfmoveClock,
+      fullmoveNumber,
+    ] = fen.split(" ");
+
+    const now = Date.now();
 
     return {
       fen,
@@ -126,199 +147,98 @@ export function createInitialCrazyhouseState() {
       enPassantSquare,
       halfmoveClock: Number.parseInt(halfmoveClock),
       fullmoveNumber: Number.parseInt(fullmoveNumber),
-      whiteTime: 180000, // 3 minutes in ms
-      blackTime: 180000, // 3 minutes in ms
-      increment: 2000, // 2 seconds increment
+      whiteTime: BASE_TIME_STANDARD,
+      blackTime: BASE_TIME_STANDARD,
+      increment: INCREMENT_TIME_STANDARD,
       turnStartTimestamp: now,
       lastMoveTimestamp: now,
       moveHistory: [],
       gameStarted: false,
       firstMoveTimestamp: null,
-
-      // Crazyhouse-specific state
-      pocketPanel: {
-        white: [], // Pieces white can drop (captured black pieces)
-        black: [], // Pieces black can drop (captured white pieces)
-      },
-      capturedPieces: {
-        white: [], // Pieces captured by white (black pieces)
-        black: [], // Pieces captured by black (white pieces)
-      },
-
       gameEnded: false,
       endReason: null,
       winner: null,
       endTimestamp: null,
-      gameVariant: "crazyhouse-standard",
-    }
+      pocketedPieces: {
+        white: [], // Pieces captured by white (black pieces) - stored as type 'p', 'n', 'b', 'r', 'q'
+        black: [], // Pieces captured by black (white pieces)
+      },
+      // No 'dropTimers' for standard Crazyhouse
+    };
   } catch (error) {
-    console.error("Error creating initial Crazyhouse state:", error)
-    throw error
+    console.error("Error creating crazyhouse standard initial state:", error);
+    throw error;
   }
 }
 
-// Validate piece drop for Crazyhouse
-export function validatePieceDrop(state, drop, playerColor) {
-  try {
-    console.log("=== PIECE DROP VALIDATION START ===")
-    console.log("Drop:", drop, "Player:", playerColor)
+// Update game timers (no drop timer logic for Standard Crazyhouse)
+function updateCrazyhouseStandardTimers(state, currentTimestamp) {
+  if (state.gameEnded) return;
 
-    if (!drop || !drop.piece || !drop.square) {
-      return { valid: false, reason: "Invalid drop format", code: "INVALID_DROP_FORMAT" }
-    }
+  const game = new Chess(state.fen);
+  const currentPlayer = game.turn();
+  const currentPlayerColor = currentPlayer === "w" ? "white" : "black";
 
-    const { piece, square } = drop
-
-    // Check if player has this piece in pocket
-    if (!state.pocketPanel[playerColor].includes(piece)) {
-      return { valid: false, reason: "Piece not available in pocket", code: "PIECE_NOT_IN_POCKET" }
-    }
-
-    // Reconstruct game to validate drop
-    let game
-    try {
-      game = new Chess(state.fen)
-    } catch (error) {
-      return { valid: false, reason: "Invalid game state", code: "INVALID_FEN" }
-    }
-
-    // Check if it's the player's turn
-    const currentPlayer = game.turn()
-    const currentPlayerColor = currentPlayer === "w" ? "white" : "black"
-    if (currentPlayerColor !== playerColor) {
-      return { valid: false, reason: "Not your turn", code: "WRONG_TURN" }
-    }
-
-    // Check if target square is empty
-    const targetPiece = game.get(square)
-    if (targetPiece) {
-      return { valid: false, reason: "Target square is occupied", code: "SQUARE_OCCUPIED" }
-    }
-
-    // Validate square format (a1-h8)
-    if (!/^[a-h][1-8]$/.test(square)) {
-      return { valid: false, reason: "Invalid square format", code: "INVALID_SQUARE" }
-    }
-
-    // Crazyhouse-specific rules
-    const rank = Number.parseInt(square[1])
-
-    // Pawns cannot be dropped on 1st or 8th rank
-    if (piece === "p" && (rank === 1 || rank === 8)) {
-      return { valid: false, reason: "Pawns cannot be dropped on 1st or 8th rank", code: "INVALID_PAWN_DROP" }
-    }
-
-    // Check if drop would result in check (simulate the drop)
-    try {
-      // Create a temporary position with the piece dropped
-      const pieceColor = playerColor === "white" ? "w" : "b"
-      const pieceSymbol = pieceColor === "w" ? piece.toUpperCase() : piece.toLowerCase()
-
-      // We need to manually validate this since chess.js doesn't support drops
-      // For now, we'll allow the drop if basic rules are met
-      // In a full implementation, you'd need a Crazyhouse-aware chess engine
-
-      return { valid: true, code: "VALID_DROP" }
-    } catch (error) {
-      return { valid: false, reason: "Drop would result in illegal position", code: "ILLEGAL_DROP_POSITION" }
-    }
-  } catch (error) {
-    console.error("Error validating piece drop:", error)
-    return { valid: false, reason: "Internal error during drop validation", code: "INTERNAL_ERROR" }
-  }
-}
-
-// Apply piece drop to game state
-export function applyPieceDrop(state, drop, playerColor, currentTimestamp) {
-  try {
-    console.log("=== APPLYING PIECE DROP ===")
-
-    // Validate the drop first
-    const validation = validatePieceDrop(state, drop, playerColor)
-    if (!validation.valid) {
-      return validation
-    }
-
-    const { piece, square } = drop
-
-    // Remove piece from pocket
-    const pocketIndex = state.pocketPanel[playerColor].indexOf(piece)
-    if (pocketIndex > -1) {
-      state.pocketPanel[playerColor].splice(pocketIndex, 1)
-    }
-
-    // Update FEN to include the dropped piece
-    // This is a simplified approach - in a full implementation, you'd need proper FEN manipulation
-    const game = new Chess(state.fen)
-
-    // For demonstration, we'll track the drop in move history
-    const dropMove = {
-      from: "@", // Special notation for drops
-      to: square,
-      piece: piece,
-      drop: true,
-      san: `${piece.toUpperCase()}@${square}`,
-      color: playerColor === "white" ? "w" : "b",
-    }
-
-    // Update game state
-    state.moveHistory.push(dropMove)
-    state.lastMoveTimestamp = currentTimestamp
-
-    // Apply time increment
-    if (playerColor === "white") {
-      state.whiteTime += state.increment
+  // Deduct time from current player's main clock
+  if (state.gameStarted && state.turnStartTimestamp) {
+    const elapsed = currentTimestamp - state.turnStartTimestamp;
+    if (currentPlayer === "w") {
+      state.whiteTime = Math.max(0, state.whiteTime - elapsed);
     } else {
-      state.blackTime += state.increment
+      state.blackTime = Math.max(0, state.blackTime - elapsed);
     }
+  }
+  // No drop timer expiration logic needed here for Standard Crazyhouse
+}
 
-    // Switch turns
-    state.activeColor = state.activeColor === "white" ? "black" : "white"
-    state.turnStartTimestamp = currentTimestamp
+// Handle piece drop logic for Standard Crazyhouse (no timer checks)
+function handlePieceDropStandard(state, move, playerColor, game) {
+  const pieceType = move.piece; // e.g., 'p', 'n', 'b', 'r', 'q'
+  const targetSquare = move.to;
+  const playerPocket = state.pocketedPieces[playerColor];
 
-    console.log("Piece drop applied successfully")
+  // Find the piece in the pocket
+  const pieceIndexInPocket = playerPocket.indexOf(pieceType);
+  if (pieceIndexInPocket === -1) {
+    return { valid: false, reason: `Piece ${pieceType} not in pocket`, code: "PIECE_NOT_IN_POCKET" };
+  }
 
-    return {
-      valid: true,
-      drop: dropMove,
-      state,
-      code: "DROP_SUCCESS",
-    }
+  // Validate standard Crazyhouse drop rules
+  const targetRank = parseInt(targetSquare[1]);
+  if (pieceType.toLowerCase() === "p" && (targetRank === 1 || targetRank === 8)) {
+    return { valid: false, reason: "Pawns cannot be dropped on 1st or 8th rank", code: "INVALID_PAWN_DROP" };
+  }
+
+  // Check if target square is empty (Crazyhouse rule)
+  if (game.get(targetSquare)) {
+    return { valid: false, reason: "Cannot drop on an occupied square", code: "SQUARE_OCCUPIED" };
+  }
+
+  // Apply the drop
+  try {
+    game.put({ type: pieceType, color: playerColor === "white" ? "w" : "b" }, targetSquare);
+    playerPocket.splice(pieceIndexInPocket, 1); // Remove from pocket
+    return { valid: true, game: game };
   } catch (error) {
-    console.error("Error applying piece drop:", error)
-    return { valid: false, reason: "Internal error during drop application", code: "INTERNAL_ERROR" }
+    console.error("Chess.js put error during drop:", error);
+    return { valid: false, reason: "Illegal drop: " + error.message, code: "CHESS_JS_ERROR" };
   }
 }
 
-// Enhanced move validation for Crazyhouse Standard
-export function validateAndApplyCrazyhouseMove(state, move, playerColor, currentTimestamp) {
+// Validate a move or piece drop and apply Crazyhouse (Standard) rules
+export function validateAndApplyCrazyhouseStandardMove(state, move, playerColor, currentTimestamp) {
   try {
-    console.log("=== CRAZYHOUSE MOVE VALIDATION START ===")
-    console.log("Move:", move, "Player:", playerColor)
+    console.log("=== CRAZYHOUSE STANDARD MOVE VALIDATION START ===");
+    console.log("Move/Drop:", move, "Player:", playerColor);
 
-    // Handle piece drops
-    if (move.drop) {
-      return applyPieceDrop(state, move, playerColor, currentTimestamp)
-    }
-
-    // Validate input parameters
-    if (!state || typeof state !== "object") {
-      return { valid: false, reason: "Invalid game state", code: "INVALID_STATE" }
-    }
-
-    if (!move || typeof move !== "object" || !move.from || !move.to) {
-      return { valid: false, reason: "Invalid move format", code: "INVALID_MOVE" }
-    }
-
-    if (!playerColor || (playerColor !== "white" && playerColor !== "black")) {
-      return { valid: false, reason: "Invalid player color", code: "INVALID_PLAYER" }
+    if (!validateInputsStandard(state, move, playerColor)) {
+      return { valid: false, reason: "Invalid input parameters", code: "INVALID_INPUT" };
     }
 
     if (!currentTimestamp || typeof currentTimestamp !== "number") {
-      currentTimestamp = Date.now()
+      currentTimestamp = Date.now();
     }
 
-    // Check if game has already ended
     if (state.gameEnded) {
       return {
         valid: false,
@@ -326,274 +246,274 @@ export function validateAndApplyCrazyhouseMove(state, move, playerColor, current
         gameEnded: true,
         shouldNavigateToMenu: true,
         code: "GAME_ENDED",
-      }
+      };
     }
+
+    // Initialize state defaults if needed
+    initializeStateDefaultsStandard(state, currentTimestamp);
 
     // Reconstruct game from FEN
-    let game
-    if (state.fen) {
-      try {
-        game = new Chess(state.fen)
-        state.game = game
-      } catch (error) {
-        console.error("Error reconstructing game from FEN:", error)
-        return { valid: false, reason: "Invalid game state", code: "INVALID_FEN" }
-      }
-    } else {
-      return { valid: false, reason: "Invalid state: missing FEN", code: "MISSING_FEN" }
-    }
-
-    // Initialize timer values if missing
-    if (typeof state.turnStartTimestamp !== "number") state.turnStartTimestamp = currentTimestamp
-    if (typeof state.lastMoveTimestamp !== "number") state.lastMoveTimestamp = currentTimestamp
-    if (typeof state.whiteTime !== "number") state.whiteTime = 180000
-    if (typeof state.blackTime !== "number") state.blackTime = 180000
-    if (typeof state.increment !== "number") state.increment = 2000
-    if (!state.moveHistory) state.moveHistory = []
-    if (!state.repetitionMap) state.repetitionMap = new Map()
-    if (typeof state.gameStarted !== "boolean") state.gameStarted = false
-    if (!state.firstMoveTimestamp) state.firstMoveTimestamp = null
-    if (!state.pocketPanel) state.pocketPanel = { white: [], black: [] }
-    if (!state.capturedPieces) state.capturedPieces = { white: [], black: [] }
-    if (typeof state.gameEnded !== "boolean") state.gameEnded = false
-
-    // Check for time-based game ending BEFORE processing the move
-    if (state.whiteTime <= 0) {
-      state.gameEnded = true
-      state.endReason = "timeout"
-      state.winnerColor = "black"
-      state.winner = null
-      state.endTimestamp = currentTimestamp
-      return {
-        valid: false,
-        reason: "White ran out of time",
-        result: "timeout",
-        winnerColor: "black",
-        gameEnded: true,
-        endReason: "timeout",
-        shouldNavigateToMenu: true,
-        endTimestamp: currentTimestamp,
-        code: "WHITE_TIMEOUT",
-      }
-    }
-
-    if (state.blackTime <= 0) {
-      state.gameEnded = true
-      state.endReason = "timeout"
-      state.winnerColor = "white"
-      state.winner = null
-      state.endTimestamp = currentTimestamp
-      return {
-        valid: false,
-        reason: "Black ran out of time",
-        result: "timeout",
-        winnerColor: "white",
-        gameEnded: true,
-        endReason: "timeout",
-        shouldNavigateToMenu: true,
-        endTimestamp: currentTimestamp,
-        code: "BLACK_TIMEOUT",
-      }
-    }
-
-    // Get current player before move
-    const currentPlayerBeforeMove = game.turn()
-    const currentPlayerColor = currentPlayerBeforeMove === "w" ? "white" : "black"
-
-    // Verify turn
-    if (currentPlayerColor !== playerColor) {
-      return { valid: false, reason: "Not your turn", code: "WRONG_TURN" }
-    }
-
-    // Handle first move
-    if (!state.gameStarted || state.moveHistory.length === 0) {
-      console.log("FIRST MOVE DETECTED - Starting game timers")
-      state.gameStarted = true
-      state.firstMoveTimestamp = currentTimestamp
-      state.turnStartTimestamp = currentTimestamp
-      state.lastMoveTimestamp = currentTimestamp
-    } else {
-      // Calculate elapsed time and deduct from current player
-      const elapsed = currentTimestamp - state.turnStartTimestamp
-
-      if (currentPlayerBeforeMove === "w") {
-        const newWhiteTime = Math.max(0, state.whiteTime - elapsed)
-        state.whiteTime = newWhiteTime
-        if (state.whiteTime <= 0) {
-          state.gameEnded = true
-          state.endReason = "timeout"
-          state.winnerColor = "black"
-          state.endTimestamp = currentTimestamp
-          return {
-            valid: false,
-            reason: "Time out",
-            result: "timeout",
-            winnerColor: "black",
-            gameEnded: true,
-            endReason: "timeout",
-            shouldNavigateToMenu: true,
-            endTimestamp: currentTimestamp,
-            code: "WHITE_TIMEOUT_DURING_MOVE",
-          }
-        }
-      } else {
-        const newBlackTime = Math.max(0, state.blackTime - elapsed)
-        state.blackTime = newBlackTime
-        if (state.blackTime <= 0) {
-          state.gameEnded = true
-          state.endReason = "timeout"
-          state.winnerColor = "white"
-          state.endTimestamp = currentTimestamp
-          return {
-            valid: false,
-            reason: "Time out",
-            result: "timeout",
-            winnerColor: "white",
-            gameEnded: true,
-            endReason: "timeout",
-            shouldNavigateToMenu: true,
-            endTimestamp: currentTimestamp,
-            code: "BLACK_TIMEOUT_DURING_MOVE",
-          }
-        }
-      }
-    }
-
-    // Check for captured piece
-    const targetSquare = move.to
-    const capturedPiece = game.get(targetSquare)
-
-    // Validate and apply the move
-    let result
+    let game;
     try {
-      result = game.move(move)
+      game = new Chess(state.fen);
+      state.game = game; // Attach to state for helpers
     } catch (error) {
-      console.error("Chess.js move error:", error)
-      return { valid: false, reason: "Invalid move", code: "CHESS_JS_ERROR", details: error.message }
+      console.error("Error reconstructing game from FEN:", error);
+      return { valid: false, reason: "Invalid game state (FEN)", code: "INVALID_FEN" };
     }
 
-    if (!result) return { valid: false, reason: "Illegal move", code: "ILLEGAL_MOVE" }
-
-    // Handle captured pieces in Crazyhouse
-    if (capturedPiece) {
-      const capturingPlayer = currentPlayerBeforeMove === "w" ? "white" : "black"
-      state.capturedPieces[capturingPlayer].push(capturedPiece.type)
-
-      // Add captured piece to pocket (convert to unpromoted piece if needed)
-      const pocketPiece = capturedPiece.type
-      if (pocketPiece === "q" || pocketPiece === "r" || pocketPiece === "b" || pocketPiece === "n") {
-        // In Crazyhouse, promoted pieces revert to pawns when captured
-        // This is a simplification - you might want more complex logic
-      }
-      state.pocketPanel[capturingPlayer].push(pocketPiece)
-
-      console.log(`${capturingPlayer} captured ${capturedPiece.type}, added to pocket`)
+    // Check turn
+    const currentPlayerBeforeMove = game.turn();
+    const currentPlayerColor = currentPlayerBeforeMove === "w" ? "white" : "black";
+    if (currentPlayerColor !== playerColor) {
+      return { valid: false, reason: "Not your turn", code: "WRONG_TURN" };
     }
 
-    // Apply time increment
-    if (currentPlayerBeforeMove === "w") {
-      state.whiteTime += state.increment
+    // Update timers *before* processing the current move/drop
+    updateCrazyhouseStandardTimers(state, currentTimestamp);
+
+    // After updating, check for timeout
+    const timeoutResult = checkForTimeoutStandard(state, currentTimestamp);
+    if (timeoutResult.gameEnded) {
+      return timeoutResult;
+    }
+
+    let moveResult;
+    let isDrop = false;
+    console.log("move:", move);
+
+    if (move.drop === true) { // Assuming 'move' object has a 'type: "drop"' property
+
+      isDrop = true;
+      moveResult = handlePieceDropStandard(state, move, playerColor, game);
     } else {
-      state.blackTime += state.increment
+      // Standard chess move
+      moveResult = validateChessMoveStandard(state, move, playerColor, currentTimestamp);
+
+      // If it's a capture, add to pocketedPieces
+      if (moveResult.valid && moveResult.capturedPiece) {
+        const capturedPieceType = moveResult.capturedPiece.type.toLowerCase();
+        const capturingPlayerColor = playerColor;
+        state.pocketedPieces[capturingPlayerColor].push(capturedPieceType);
+        console.log(`${capturingPlayerColor} captured ${capturedPieceType}. Added to pocket.`);
+      }
     }
 
-    // Update state after successful move
-    const oldFen = state.fen
-    state.fen = game.fen()
-    state.lastMoveTimestamp = currentTimestamp
-    state.turnStartTimestamp = currentTimestamp
-    state.moveHistory.push(result)
+    if (!moveResult.valid) {
+      return moveResult; // Return error from move/drop validation
+    }
 
-    // Update active color
-    const newActivePlayer = game.turn()
-    state.activeColor = newActivePlayer === "w" ? "white" : "black"
-
-    // Update repetition tracking
-    updateRepetitionMap(state, game)
+    // Update game state after successful move/drop
+    updateGameStateAfterMoveStandard(state, moveResult, currentTimestamp, isDrop);
 
     // Check game status
-    const resultStatus = checkCrazyhouseGameStatus(state, game)
-
-    if (resultStatus.result !== "ongoing") {
-      state.gameEnded = true
-      state.endReason = resultStatus.result
-      state.winnerColor = resultStatus.winnerColor || null
-      state.endTimestamp = currentTimestamp
-      resultStatus.shouldNavigateToMenu = true
-      resultStatus.endTimestamp = currentTimestamp
-      resultStatus.winnerColor = state.winnerColor
+    const gameStatus = checkCrazyhouseStandardGameStatus(state, game);
+    if (gameStatus.result !== "ongoing") {
+      finalizeGameEndStandard(state, gameStatus, currentTimestamp);
     }
 
-    // Clean up Chess instance
-    if (state.game) delete state.game
+    if (state.game) delete state.game; // Clean up temp Chess instance
 
-    // Add detailed game state info
-    state.gameState = {
-      check: game.inCheck ? game.inCheck() : false,
-      checkmate: game.isCheckmate(),
-      stalemate: game.isStalemate(),
-      insufficientMaterial: game.isInsufficientMaterial(),
-      threefoldRepetition: game.isThreefoldRepetition(),
-      fiftyMoveRule: game.isDraw(),
-      lastMove: result,
-      result: resultStatus.result,
-      winner:
-        resultStatus.winnerColor && state.players && state.players[resultStatus.winnerColor]
-          ? state.players[resultStatus.winnerColor].username
-          : null,
-      winnerId:
-        resultStatus.winnerColor && state.players && state.players[resultStatus.winnerColor]
-          ? state.players[resultStatus.winnerColor]._id || null
-          : null,
-      drawReason: resultStatus.reason || null,
-      gameEnded: state.gameEnded,
-      endReason: state.endReason,
-      endTimestamp: state.endTimestamp,
-      pocketPanel: state.pocketPanel,
-    }
-
-    console.log("=== CRAZYHOUSE MOVE VALIDATION END ===")
-
-    return {
-      valid: true,
-      move: result,
-      state,
-      gameEnded: state.gameEnded,
-      endReason: state.endReason,
-      endTimestamp: state.endTimestamp,
-      code: "SUCCESS",
-      winnerColor: state.winnerColor,
-      winner: state.winner,
-      ...resultStatus,
-    }
+    console.log("=== CRAZYHOUSE STANDARD MOVE VALIDATION END ===");
+    return createMoveResultStandard(state, moveResult, gameStatus);
   } catch (error) {
-    console.error("Error in validateAndApplyCrazyhouseMove:", error)
+    console.error("Error in validateAndApplyCrazyhouseStandardMove:", error);
     return {
       valid: false,
       reason: "Internal error during move validation",
       error: error.message,
       code: "INTERNAL_ERROR",
-      stack: error.stack,
-    }
+    };
   }
 }
 
-// Get current timers for Crazyhouse
-export function getCurrentCrazyhouseTimers(state, currentTimestamp) {
+// Helper functions for better organization (adapted for Standard Crazyhouse)
+function validateInputsStandard(state, move, playerColor) {
+  if (!state || typeof state !== "object") return false;
+  if (!move || typeof move !== "object") return false;
+  if (!playerColor || (playerColor !== "white" && playerColor !== "black")) return false;
+
+  if (move.drop === true) {
+    if (!move.piece || !move.to) return false;
+  } else {
+    if (!move.from || !move.to) return false;
+  }
+  return true;
+}
+
+function initializeStateDefaultsStandard(state, currentTimestamp) {
+  if (typeof state.turnStartTimestamp !== "number") state.turnStartTimestamp = currentTimestamp;
+  if (typeof state.lastMoveTimestamp !== "number") state.lastMoveTimestamp = currentTimestamp;
+  if (typeof state.whiteTime !== "number") state.whiteTime = BASE_TIME_STANDARD;
+  if (typeof state.blackTime !== "number") state.blackTime = BASE_TIME_STANDARD;
+  if (!state.moveHistory) state.moveHistory = [];
+  if (typeof state.gameStarted !== "boolean") state.gameStarted = false;
+  if (!state.firstMoveTimestamp) state.firstMoveTimestamp = null;
+  if (!state.pocketedPieces) state.pocketedPieces = { white: [], black: [] };
+  if (typeof state.gameEnded !== "boolean") state.gameEnded = false;
+  // No 'dropTimers' initialization for standard Crazyhouse
+}
+
+function checkForTimeoutStandard(state, currentTimestamp) {
+  if (state.whiteTime <= 0) {
+    return createTimeoutResultStandard(state, "black", "White ran out of time", currentTimestamp);
+  }
+  if (state.blackTime <= 0) {
+    return createTimeoutResultStandard(state, "white", "Black ran out of time", currentTimestamp);
+  }
+  return { gameEnded: false };
+}
+
+function createTimeoutResultStandard(state, winner, reason, currentTimestamp) {
+  state.gameEnded = true;
+  state.endReason = "timeout";
+  state.winnerColor = winner;
+  state.winner = null;
+  state.endTimestamp = currentTimestamp;
+
+  return {
+    valid: false,
+    reason: reason,
+    result: "timeout",
+    winnerColor: winner,
+    gameEnded: true,
+    endReason: "timeout",
+    shouldNavigateToMenu: true,
+    endTimestamp: currentTimestamp,
+    code: "TIMEOUT",
+  };
+}
+
+function validateChessMoveStandard(state, move, playerColor, currentTimestamp) {
+  let game = state.game;
+
+  const currentPlayerBeforeMove = game.turn();
+  const currentPlayerColor = currentPlayerBeforeMove === "w" ? "white" : "black";
+
+  if (currentPlayerColor !== playerColor) {
+    return { valid: false, reason: "Not your turn", code: "WRONG_TURN" };
+  }
+
+  if (!state.gameStarted || state.moveHistory.length === 0) {
+    console.log("FIRST MOVE DETECTED - Starting game timers");
+    state.gameStarted = true;
+    state.firstMoveTimestamp = currentTimestamp;
+    state.turnStartTimestamp = currentTimestamp;
+    state.lastMoveTimestamp = currentTimestamp;
+  }
+
+  let result;
+  try {
+    result = game.move(move);
+  } catch (error) {
+    console.error("Chess.js move error:", error);
+    return { valid: false, reason: "Invalid move", code: "CHESS_JS_ERROR", details: error.message };
+  }
+
+  if (!result) return { valid: false, reason: "Illegal move", code: "ILLEGAL_MOVE" };
+
+  return {
+    valid: true,
+    result: result,
+    game: game,
+    capturedPiece: result.captured ? { type: result.captured, color: result.color } : null,
+    currentPlayerBeforeMove: currentPlayerBeforeMove,
+  };
+}
+
+function updateGameStateAfterMoveStandard(state, moveResult, currentTimestamp, isDrop) {
+  const { result, capturedPiece, currentPlayerBeforeMove, game } = moveResult;
+
+  const oldFen = state.fen;
+  state.fen = game.fen();
+  state.lastMoveTimestamp = currentTimestamp;
+
+  if (currentPlayerBeforeMove === "w") {
+    state.whiteTime += state.increment;
+  } else {
+    state.blackTime += state.increment;
+  }
+
+  state.turnStartTimestamp = currentTimestamp;
+  state.moveHistory.push(result);
+
+  const newActivePlayer = game.turn();
+  state.activeColor = newActivePlayer === "w" ? "white" : "black";
+
+  console.log("Move/Drop completed:");
+  console.log("- FEN changed from:", oldFen.split(" ")[0], "to:", state.fen.split(" ")[0]);
+  console.log("- Next player's turn:", newActivePlayer, "Active color:", state.activeColor);
+  console.log("- Final times - White:", state.whiteTime, "Black:", state.blackTime);
+
+  // Update repetition tracking for Crazyhouse (includes pocket)
+  updateRepetitionMap(state, game, true);
+}
+
+function finalizeGameEndStandard(state, gameStatus, currentTimestamp) {
+  state.gameEnded = true;
+  state.endReason = gameStatus.result;
+  state.winnerColor = gameStatus.winnerColor || null;
+  state.endTimestamp = currentTimestamp;
+}
+
+function createMoveResultStandard(state, moveResult, gameStatus) {
+  state.gameState = {
+    check: moveResult.game.inCheck(),
+    checkmate: moveResult.game.isCheckmate(),
+    stalemate: moveResult.game.isStalemate(),
+    insufficientMaterial: moveResult.game.isInsufficientMaterial(),
+    threefoldRepetition: moveResult.game.isThreefoldRepetition(),
+    fiftyMoveRule: moveResult.game.isDraw(),
+    lastMove: moveResult.result,
+    result: gameStatus.result,
+    winner:
+      gameStatus.winnerColor && state.players && state.players[gameStatus.winnerColor]
+        ? state.players[gameStatus.winnerColor].username
+        : null,
+    winnerId:
+      gameStatus.winnerColor && state.players && state.players[gameStatus.winnerColor]
+        ? state.players[gameStatus.winnerColor]._id || null
+        : null,
+    drawReason: gameStatus.reason || null,
+    gameEnded: state.gameEnded,
+    endReason: state.endReason,
+    endTimestamp: state.endTimestamp,
+    pocketedPieces: state.pocketedPieces,
+    // No 'dropTimers' in the returned state for Standard Crazyhouse
+  };
+
+  console.log("Pocket Pieces", state.gameState.pocketedPieces);
+
+  return {
+    valid: true,
+    move: moveResult.result,
+    state,
+    gameEnded: state.gameEnded,
+    endReason: state.endReason,
+    endTimestamp: state.endTimestamp,
+    code: "SUCCESS",
+    winnerColor: state.winnerColor,
+    winner: state.winner,
+    ...gameStatus,
+  };
+}
+
+// Get current timer values for Standard Crazyhouse
+export function getCurrentCrazyhouseStandardTimers(state, currentTimestamp) {
   try {
     if (!state || typeof state !== "object") {
-      console.error("[TIMER] Invalid state provided to getCurrentCrazyhouseTimers")
+      console.error("[CRAZYHOUSE_STANDARD_TIMER] Invalid state provided");
       return {
-        white: 180000,
-        black: 180000,
+        white: BASE_TIME_STANDARD,
+        black: BASE_TIME_STANDARD,
         activeColor: "white",
         gameEnded: false,
         error: "Invalid state",
-      }
+      };
     }
 
     if (!currentTimestamp || typeof currentTimestamp !== "number") {
-      currentTimestamp = Date.now()
+      currentTimestamp = Date.now();
     }
 
     if (state.gameEnded) {
@@ -606,242 +526,261 @@ export function getCurrentCrazyhouseTimers(state, currentTimestamp) {
         winner: state.winner,
         shouldNavigateToMenu: true,
         endTimestamp: state.endTimestamp,
-        pocketPanel: state.pocketPanel,
-      }
+        pocketedPieces: state.pocketedPieces,
+      };
     }
 
     if (!state.gameStarted || !state.turnStartTimestamp || state.moveHistory.length === 0) {
       return {
-        white: state.whiteTime || 180000,
-        black: state.blackTime || 180000,
+        white: state.whiteTime || BASE_TIME_STANDARD,
+        black: state.blackTime || BASE_TIME_STANDARD,
         activeColor: state.activeColor || "white",
         gameEnded: false,
-        pocketPanel: state.pocketPanel || { white: [], black: [] },
-      }
+        pocketedPieces: state.pocketedPieces,
+      };
     }
 
-    let game
-    try {
-      game = new Chess(state.fen)
-    } catch (error) {
-      console.error("[TIMER] Error reconstructing game from FEN:", error)
-      return {
-        white: state.whiteTime || 180000,
-        black: state.blackTime || 180000,
-        activeColor: state.activeColor || "white",
-        gameEnded: false,
-        error: "Invalid FEN",
-        pocketPanel: state.pocketPanel || { white: [], black: [] },
-      }
-    }
+    // Temporarily update timers to reflect current time before returning
+    const tempState = JSON.parse(JSON.stringify(state));
+    updateCrazyhouseStandardTimers(tempState, currentTimestamp);
 
-    const currentPlayer = game.turn()
-    const currentPlayerColor = currentPlayer === "w" ? "white" : "black"
-    const elapsed = currentTimestamp - state.turnStartTimestamp
-
-    let whiteTime = state.whiteTime || 180000
-    let blackTime = state.blackTime || 180000
-
-    if (currentPlayer === "w") {
-      whiteTime = Math.max(0, whiteTime - elapsed)
-    } else {
-      blackTime = Math.max(0, blackTime - elapsed)
-    }
-
-    // Check for timeout
-    if (whiteTime <= 0) {
-      state.gameEnded = true
-      state.endReason = "timeout"
-      state.winnerColor = "black"
-      state.endTimestamp = currentTimestamp
+    if (tempState.whiteTime <= 0) {
+      state.gameEnded = true;
+      state.endReason = "timeout";
+      state.winnerColor = "black";
+      state.winner = null;
+      state.endTimestamp = currentTimestamp;
       return {
         white: 0,
-        black: blackTime,
-        activeColor: currentPlayerColor,
+        black: tempState.blackTime,
+        activeColor: tempState.activeColor,
         gameEnded: true,
         endReason: "timeout",
         winnerColor: "black",
+        winner: null,
         shouldNavigateToMenu: true,
         endTimestamp: currentTimestamp,
-        pocketPanel: state.pocketPanel,
-      }
+        pocketedPieces: state.pocketedPieces,
+      };
     }
 
-    if (blackTime <= 0) {
-      state.gameEnded = true
-      state.endReason = "timeout"
-      state.winnerColor = "white"
-      state.endTimestamp = currentTimestamp
+    if (tempState.blackTime <= 0) {
+      state.gameEnded = true;
+      state.endReason = "timeout";
+      state.winnerColor = "white";
+      state.winner = null;
+      state.endTimestamp = currentTimestamp;
       return {
-        white: whiteTime,
+        white: tempState.whiteTime,
         black: 0,
-        activeColor: currentPlayerColor,
+        activeColor: tempState.activeColor,
         gameEnded: true,
         endReason: "timeout",
         winnerColor: "white",
+        winner: null,
         shouldNavigateToMenu: true,
         endTimestamp: currentTimestamp,
-        pocketPanel: state.pocketPanel,
-      }
+        pocketedPieces: state.pocketedPieces,
+      };
     }
 
     return {
-      white: whiteTime,
-      black: blackTime,
-      activeColor: currentPlayerColor,
+      white: tempState.whiteTime,
+      black: tempState.blackTime,
+      activeColor: tempState.activeColor,
       gameEnded: false,
-      pocketPanel: state.pocketPanel || { white: [], black: [] },
-    }
+      pocketedPieces: tempState.pocketedPieces,
+    };
   } catch (error) {
-    console.error("Error in getCurrentCrazyhouseTimers:", error)
+    console.error("Error in getCurrentCrazyhouseStandardTimers:", error);
     return {
-      white: state?.whiteTime || 180000,
-      black: state?.blackTime || 180000,
+      white: state?.whiteTime || BASE_TIME_STANDARD,
+      black: state?.blackTime || BASE_TIME_STANDARD,
       activeColor: state?.activeColor || "white",
       gameEnded: false,
       error: error.message,
-      pocketPanel: state?.pocketPanel || { white: [], black: [] },
-    }
+    };
   }
 }
 
-// Check game status for Crazyhouse
-export function checkCrazyhouseGameStatus(state, gameInstance) {
+// Generate legal moves and possible piece drops for Standard Crazyhouse (no timer checks)
+export function getCrazyhouseStandardLegalMoves(fen, pocketedPieces, playerColor) {
   try {
-    if (!state || typeof state !== "object") {
-      console.error("[STATUS] Invalid state provided to checkCrazyhouseGameStatus")
-      return { result: "ongoing", error: "Invalid state" }
-    }
-
-    let game = gameInstance
-    if (!game) {
-      if (!state.fen) {
-        console.error("[STATUS] Missing FEN in game state")
-        return { result: "ongoing", error: "Missing FEN" }
-      }
-      try {
-        game = new Chess(state.fen)
-      } catch (error) {
-        console.error("[STATUS] Error reconstructing game from FEN:", error)
-        return { result: "ongoing", error: "Invalid FEN" }
-      }
-    }
-
-    // Check for time-based wins first
-    if (state.whiteTime <= 0) return { result: "timeout", winnerColor: "black", reason: "white ran out of time" }
-    if (state.blackTime <= 0) return { result: "timeout", winnerColor: "white", reason: "black ran out of time" }
-
-    // In Crazyhouse, checkmate is harder to achieve due to piece drops
-    // But we still check for it
-    if (game.isCheckmate()) {
-      const winnerColor = game.turn() === "w" ? "black" : "white"
-      console.log(`CHECKMATE DETECTED: ${winnerColor} wins!`)
-      return { result: "checkmate", winnerColor: winnerColor }
-    }
-
-    // Check for other draw conditions (less common in Crazyhouse)
-    if (game.isStalemate()) return { result: "draw", reason: "stalemate", winnerColor: null }
-    if (game.isInsufficientMaterial()) return { result: "draw", reason: "insufficient material", winnerColor: null }
-    if (game.isThreefoldRepetition()) return { result: "draw", reason: "threefold repetition", winnerColor: null }
-    if (game.isDraw()) return { result: "draw", reason: "50-move rule", winnerColor: null }
-
-    // Manual repetition checks
-    if (!(state.repetitionMap instanceof Map)) {
-      state.repetitionMap = new Map(Object.entries(state.repetitionMap || {}))
-    }
-    const repetitionCount = state.repetitionMap.get(game.fen()) || 0
-    if (repetitionCount >= 5) return { result: "draw", reason: "fivefold repetition", winnerColor: null }
-    if (state.moveHistory && state.moveHistory.length >= 150)
-      return { result: "draw", reason: "75-move rule", winnerColor: null }
-
-    return { result: "ongoing", winnerColor: null }
-  } catch (error) {
-    console.error("Error checking Crazyhouse game status:", error)
-    return { result: "ongoing", error: error.message, winnerColor: null }
-  }
-}
-
-// Helper: track FEN repetitions
-export function updateRepetitionMap(state, gameInstance) {
-  try {
-    if (!state || typeof state !== "object") {
-      console.error("[REPETITION] Invalid state provided to updateRepetitionMap")
-      return
-    }
-
-    let fen
-    if (gameInstance) {
-      fen = gameInstance.fen()
-    } else if (state.fen) {
-      fen = state.fen
-    } else {
-      console.error("[REPETITION] Missing FEN in game state")
-      return
-    }
-
     if (!fen || typeof fen !== "string") {
-      console.error("[REPETITION] Invalid FEN format:", fen)
-      return
+      console.error("[CRAZYHOUSE_STANDARD_MOVES] Invalid FEN provided:", fen);
+      return [];
     }
 
-    if (!(state.repetitionMap instanceof Map)) {
-      state.repetitionMap = new Map(Object.entries(state.repetitionMap || {}))
-    }
+    const game = new Chess(fen);
+    const allBoardMoves = game.moves({ verbose: true });
+    const legalMoves = [...allBoardMoves];
 
-    const current = state.repetitionMap.get(fen) || 0
-    state.repetitionMap.set(fen, current + 1)
-    console.log("Repetition map updated for FEN:", fen, "Count:", current + 1)
-  } catch (error) {
-    console.error("Error updating repetition map:", error)
-  }
-}
+    // Add possible piece drops
+    if (pocketedPieces && pocketedPieces[playerColor]) {
+      const currentPlayerPocket = pocketedPieces[playerColor];
+      const uniqueDroppablePieces = [...new Set(currentPlayerPocket)]; // Get unique types
 
-// Get legal moves including possible drops
-export function getCrazyhouseLegalMoves(state) {
-  try {
-    if (!state || !state.fen) {
-      console.error("[MOVES] Invalid state provided to getCrazyhouseLegalMoves")
-      return { moves: [], drops: [] }
-    }
+      for (const pieceType of uniqueDroppablePieces) {
+        // No timer check needed for standard Crazyhouse
 
-    const game = new Chess(state.fen)
-    const regularMoves = game.moves({ verbose: true })
+        for (let row = 0; row < 8; row++) {
+          for (let col = 0; col < 8; col++) {
+            const square = String.fromCharCode(97 + col) + (row + 1);
 
-    // Get possible drops
-    const currentPlayer = game.turn() === "w" ? "white" : "black"
-    const availablePieces = state.pocketPanel?.[currentPlayer] || []
-    const drops = []
+            // Standard Crazyhouse drop rules: Pawns cannot be dropped on 1st or 8th rank
+            if (pieceType.toLowerCase() === "p" && (row === 0 || row === 7)) {
+              continue;
+            }
 
-    if (availablePieces.length > 0) {
-      // Generate all possible drop squares
-      for (let file = 0; file < 8; file++) {
-        for (let rank = 0; rank < 8; rank++) {
-          const square = String.fromCharCode(97 + file) + (rank + 1)
-          const piece = game.get(square)
+            // Square must be empty for a drop
+            if (!game.get(square)) {
+              try {
+                // Temporarily apply the drop to check legality (e.g., not self-check)
+                const tempGame = new Chess(fen);
+                tempGame.put({ type: pieceType, color: playerColor === "white" ? "w" : "b" }, square);
 
-          // Only consider empty squares
-          if (!piece) {
-            for (const availablePiece of availablePieces) {
-              // Check if drop is legal
-              if (availablePiece === "p" && (rank === 0 || rank === 7)) {
-                continue // Pawns can't be dropped on 1st or 8th rank
+                // Ensure putting the piece doesn't put the *current player's* king in check
+                if (!tempGame.inCheck()) {
+                  legalMoves.push({
+                    from: "pocket", // Special 'from' to denote a drop
+                    to: square,
+                    piece: pieceType,
+                    color: playerColor === "white" ? "w" : "b",
+                    captured: null,
+                    promotion: null,
+                    san: `${pieceType.toUpperCase()}@${square}`,
+                    flags: "d",
+                    drop: true // <-- Add this property for backend compatibility
+                  });
+                }
+              } catch (e) {
+                // This catch handles cases like attempting to put a king where one already exists
               }
-
-              drops.push({
-                piece: availablePiece,
-                square: square,
-                drop: true,
-                san: `${availablePiece.toUpperCase()}@${square}`,
-              })
             }
           }
         }
       }
     }
-
-    return { moves: regularMoves, drops: drops }
+    return legalMoves;
   } catch (error) {
-    console.error("Error getting Crazyhouse legal moves:", error)
-    return { moves: [], drops: [] }
+    console.error("Error getting crazyhouse standard legal moves:", error);
+    return [];
   }
+}
+
+// Check game status including Crazyhouse specific conditions (repetition includes pocket)
+export function checkCrazyhouseStandardGameStatus(state, gameInstance) {
+  try {
+    if (!state || typeof state !== "object") {
+      console.error("[CRAZYHOUSE_STANDARD_STATUS] Invalid state provided");
+      return { result: "ongoing", error: "Invalid state" };
+    }
+
+    let game = gameInstance;
+    if (!game) {
+      if (!state.fen) {
+        console.error("[CRAZYHOUSE_STANDARD_STATUS] Missing FEN in game state");
+        return { result: "ongoing", error: "Missing FEN" };
+      }
+      try {
+        game = new Chess(state.fen);
+      } catch (error) {
+        console.error("[CRAZYHOUSE_STANDARD_STATUS] Error reconstructing game from FEN:", error);
+        return { result: "ongoing", error: "Invalid FEN" };
+      }
+    }
+
+    // Check for time-based wins first
+    if (state.whiteTime <= 0) return { result: "timeout", winnerColor: "black", reason: "white ran out of time" };
+    if (state.blackTime <= 0) return { result: "timeout", winnerColor: "white", reason: "black ran out of time" };
+
+    // Check for checkmate
+    if (game.isCheckmate()) {
+      const winnerColor = game.turn() === "w" ? "black" : "white";
+      console.log(`CHECKMATE DETECTED: ${winnerColor} wins!`);
+      return { result: "checkmate", winnerColor: winnerColor };
+    }
+
+    // Check for other draw conditions
+    if (game.isStalemate()) return { result: "draw", reason: "stalemate", winnerColor: null };
+    if (game.isInsufficientMaterial()) return { result: "draw", reason: "insufficient material", winnerColor: null };
+
+    // Crazyhouse repetition must include the pocketed pieces state
+    if (!(state.repetitionMap instanceof Map)) {
+      state.repetitionMap = new Map(Object.entries(state.repetitionMap || {}));
+    }
+    const crazyhouseFen = getCrazyhouseFenForRepetition(game.fen(), state.pocketedPieces);
+    const repetitionCount = state.repetitionMap.get(crazyhouseFen) || 0;
+    if (repetitionCount >= 3) return { result: "draw", reason: "threefold repetition (crazyhouse)", winnerColor: null };
+
+    // Chess.com Crazyhouse implements 50-move and 75-move rules for draws.
+    // Chess.js's isDraw() includes 50-move rule.
+    if (game.isDraw()) return { result: "draw", reason: "50-move rule", winnerColor: null };
+
+    // 75-move rule (150 half-moves)
+    if (state.moveHistory && state.moveHistory.length >= 150)
+      return { result: "draw", reason: "75-move rule", winnerColor: null };
+
+    return { result: "ongoing", winnerColor: null };
+  } catch (error) {
+    console.error("Error checking crazyhouse standard game status:", error);
+    return { result: "ongoing", error: error.message, winnerColor: null };
+  }
+}
+
+// Helper: track FEN repetitions for Crazyhouse (includes pocketed pieces)
+export function updateRepetitionMap(state, gameInstance, isCrazyhouse = false) {
+  try {
+    if (!state || typeof state !== "object") {
+      console.error("[REPETITION] Invalid state provided");
+      return;
+    }
+
+    let fen;
+    if (gameInstance) {
+      fen = gameInstance.fen();
+    } else if (state.fen) {
+      fen = state.fen;
+    } else {
+      console.error("[REPETITION] Missing FEN in game state");
+      return;
+    }
+
+    if (!fen || typeof fen !== "string") {
+      console.error("[REPETITION] Invalid FEN format:", fen);
+      return;
+    }
+
+    // For Crazyhouse, repetition must include the pocketed pieces state
+    let repetitionFen = fen;
+    if (isCrazyhouse && state.pocketedPieces) {
+      // Sort pocketed pieces to ensure consistent FEN for repetition checking
+      const whitePocket = state.pocketedPieces.white.slice().sort().join('');
+      const blackPocket = state.pocketedPieces.black.slice().sort().join('');
+      repetitionFen += `[${whitePocket}][${blackPocket}]`;
+    }
+
+    if (!(state.repetitionMap instanceof Map)) {
+      state.repetitionMap = new Map(Object.entries(state.repetitionMap || {}));
+    }
+
+    const current = state.repetitionMap.get(repetitionFen) || 0;
+    state.repetitionMap.set(repetitionFen, current + 1);
+
+    console.log("Repetition map updated for Crazyhouse FEN:", repetitionFen, "Count:", current + 1);
+  } catch (error) {
+    console.error("Error updating repetition map:", error);
+  }
+}
+
+// Helper: Generate a Crazyhouse FEN string for repetition checking
+function getCrazyhouseFenForRepetition(fen, pocketedPieces) {
+    // Only the board position (first part of FEN) matters for Chess.js's internal FEN
+    // For Crazyhouse, we append the pocket state to create a unique repetition key.
+    let crazyhouseFen = fen.split(' ')[0];
+    // Sort pocketed pieces to ensure consistency for repetition checks
+    const whitePocket = pocketedPieces.white.slice().sort().join('');
+    const blackPocket = pocketedPieces.black.slice().sort().join('');
+    crazyhouseFen += `[${whitePocket}][${blackPocket}]`;
+    return crazyhouseFen;
 }

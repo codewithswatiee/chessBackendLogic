@@ -7,10 +7,10 @@ import redisClient, {
 import { createInitialState as createStandardInitialState, convertBigIntToNumber } from '../validations/classic/standard.js';
 import { createInitialState as createBlitzInitialState } from '../validations/classic/blitz.js';
 import { createInitialState as createBulletInitialState} from '../validations/classic/bullet.js';
-import { createInitialState as createSixPointerInitialState, generateRandomBalancedPosition } from '../validations/sixPointer.js';
+import { createInitialState as createSixPointerInitialState } from '../validations/sixPointer.js';
 import { createDecayInitialState } from '../validations/decay.js';
-import { createInitialCrazyhouseState as createCzyStndInitState} from '../validations/crazyhouse/crazyhouseStandard.js';
-import { createInitialCrazyhouseWithTimerState as createCzyTimerInitState } from '../validations/crazyhouse/crazyhouseTimer.js';
+import { createCrazyhouseStandardInitialState as createCzyStndInitState} from '../validations/crazyhouse/crazyhouseStandard.js';
+import { createCrazyhouseInitialState as createCzyTimerInitState } from '../validations/crazyhouse/crazyhouseTimer.js';
 
 // Game variants and their configurations
 const GAME_VARIANTS = {

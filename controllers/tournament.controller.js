@@ -206,49 +206,26 @@ export async function addTournamentUserToQueue(userId, socketId, tournamentId, i
             return;
         }
 
-        // Check if user is already in the queue for this tournament's game.
-        const existingQueueEntry = await redisClient.hGetAll(TOURNAMENT_USER_DATA_KEY(tournamentId, userId));
-        if (existingQueueEntry && existingQueueEntry.status === 'waiting') {
-            console.log(`[addTournamentUserToQueue] User ${userId} already in tournament queue for tournament ${tournamentId}.`);
-            await tryMatchTournamentUser(userId, io);
-            return;
-        }
-
-        // Randomly choose a variant and subvariant for this game within the tournament context
-        const { variant, subvariant } = getRandomVariantAndSubvariant();
-        console.log(`[addTournamentUserToQueue] User ${userId} assigned variant: ${variant}, subvariant: ${subvariant} for tournament game.`);
-
-        let rank;
-        const ratingField = getRatingField(variant);
-        if (variant === 'classic' && subvariant) {
-            rank = userDoc.ratings?.classic?.[subvariant];
-        } else {
-            rank = userDoc.ratings?.[ratingField];
-        }
-
-        if (rank === undefined || rank === null) {
-            rank = 1200; // Default ELO
-            console.warn(`[addTournamentUserToQueue] No rank for user ${userId} in variant ${variant}, using default ${rank}`);
+        // Only add to queue, do NOT assign variant/subvariant yet
+        let rank = 1200;
+        if (userDoc.ratings && typeof userDoc.ratings === 'object') {
+            // Use any rating field you want, or keep default
         }
 
         const now = Date.now();
-        const score = parseFloat(rank) + (now / 1e13); // Rank as primary sort, join time as tiebreaker
+        const score = parseFloat(rank) + (now / 1e13);
 
-        // Store user's current tournament game details
         await redisClient.hSet(TOURNAMENT_USER_DATA_KEY(tournamentId, userId), {
             userId,
             socketId,
-            rank: rank.toString(), // Store as string
-            variant,
-            subvariant: subvariant || '',
-            joinTime: now.toString(), // Store as string
+            rank: rank.toString(),
+            joinTime: now.toString(),
             status: 'waiting',
-            tournamentId, // Mark this user as being in a tournament
+            tournamentId,
         });
 
-        // Add to the common tournament queue
         await redisClient.zAdd(TOURNAMENT_QUEUE_KEY, [{ score, value: userId }]);
-        console.log(`[addTournamentUserToQueue] User ${userId} added to tournament queue (variant: ${variant}, rank: ${rank})`);
+        console.log(`[addTournamentUserToQueue] User ${userId} added to tournament queue (no variant assigned yet)`);
 
         // Try to match immediately
         try {
@@ -336,17 +313,25 @@ export async function tryMatchTournamentUser(userId, io) {
 
     for (const candidateId of tournamentCandidates) {
         const candidate = await redisClient.hGetAll(TOURNAMENT_USER_DATA_KEY(tournamentId, candidateId));
-        if (candidate && candidate.status === 'waiting' &&
-            candidate.tournamentId === tournamentId &&
-            candidate.variant === userVariant && candidate.subvariant === userSubvariant) {
-
+        if (candidate && candidate.status === 'waiting' && candidate.tournamentId === tournamentId) {
             const candidateSocket = io.sockets.get(candidate.socketId);
             if (candidateSocket) {
-                console.log(`[tryMatchTournamentUser] Found tournament match: ${userId} vs ${candidateId}`);
-                await initiateMatch(user, candidate, userSocket, candidateSocket, io, false); // Not a cross-queue match
+                // Assign random variant/subvariant for this match
+                const { variant, subvariant } = getRandomVariantAndSubvariant();
+                // Update both users' data
+                await redisClient.hSet(TOURNAMENT_USER_DATA_KEY(tournamentId, userId), { variant, subvariant });
+                await redisClient.hSet(TOURNAMENT_USER_DATA_KEY(tournamentId, candidateId), { variant, subvariant });
+                // Pass variant/subvariant to initiateMatch
+                await initiateMatch(
+                    { ...user, variant, subvariant },
+                    { ...candidate, variant, subvariant },
+                    userSocket,
+                    candidateSocket,
+                    io,
+                    false
+                );
                 return true;
             } else {
-                console.log(`[tryMatchTournamentUser] Cleaning up disconnected tournament user ${candidateId}`);
                 await leaveTournament(candidateId, tournamentId);
             }
         }

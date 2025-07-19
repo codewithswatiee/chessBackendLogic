@@ -2,346 +2,325 @@ import Game from '../models/game.model.js';
 import { getLegalMoves as legalMovesBlitz, validateAndApplyMove as validateBlitz } from '../validations/classic/blitz.js';
 import { getLegalMoves as legalMovesBullet, validateAndApplyMove as validateBullet} from '../validations/classic/bullet.js';
 import { validateAndApplyMove as validateStandard, getLegalMoves as legalMovesStandard } from '../validations/classic/standard.js';
-import { getCrazyhouseLegalMoves as legalMovesCzyStnd, validateAndApplyCrazyhouseMove as validateCzyStd} from '../validations/crazyhouse/crazyhouseStandard.js';
-import { validateAndApplyCrazyhouseWithTimerMove as validateCzyTimer, getCrazyhouseWithTimerLegalMoves as legalMovesCzyTimer } from '../validations/crazyhouse/crazyhouseTimer.js';
+// Renamed for clarity in imports if possible, otherwise use original names
+import { getCrazyhouseStandardLegalMoves as legalMovesCzyStnd, validateAndApplyCrazyhouseStandardMove as validateCzyStd} from '../validations/crazyhouse/crazyhouseStandard.js';
+import { validateAndApplyCrazyhouseMove as validateCzyTimer, getCrazyhouseLegalMoves as legalMovesCzyTimer } from '../validations/crazyhouse/crazyhouseTimer.js';
 import { getDecayLegalMoves, validateAndApplyDecayMove } from '../validations/decay.js';
 import { getLegalMoves as legalMovesSixPointer, validateAndApplyMove as validateSixPointer, resetSixPointerTimer } from '../validations/sixPointer.js';
 import { getSessionById, updateGameState } from './session.controller.js';
 
 // Make a move
-export async function makeMove({ sessionId, userId, move, timestamp, variant , subvariant  }) {
-  const session = await getSessionById(sessionId);
-  console.log("Making move:", move, "for user:", userId, "at timestamp:", timestamp);
-  if (!session) return { type: 'game:error', message: 'Session not found' };
-  const { gameState } = session;
+export async function makeMove({ sessionId, userId, move, timestamp, variant , subvariant  }) {
+  console.log("Making move:", move, "for user:", userId, "at timestamp:", timestamp);
 
-  console.log("Current game state:", gameState);
+  const session = await getSessionById(sessionId);
+  if (!session) return { type: 'game:error', message: 'Session not found' };
+
+  // Ensure gameState exists and is active
+  if (!session.gameState || session.gameState.status !== 'active') {
+    return { type: 'game:error', message: 'Game is not active or invalid state' };
+  }
+
+  let gameState = session.gameState; // Use a mutable copy if desired, but direct modification is fine here as it's saved later
+
+  console.log("Current game state (before move processing):", gameState);
+
+  const color = (gameState.players.white.userId === userId) ? 'white' : (gameState.players.black.userId === userId) ? 'black' : null;
+  if (!color) return { type: 'game:error', message: 'User not a player in this game' };
+
+  // Initialize arrays/objects if missing (important for first move)
+  gameState.moves = gameState.moves || [];
+  gameState.positionHistory = gameState.positionHistory || [];
+  gameState.metadata = gameState.metadata || {};
+  gameState.metadata.drawOffers = gameState.metadata.drawOffers || { white: false, black: false };
+
+  const now = timestamp || Date.now();
+
+  // --- **CRITICAL CHANGE**: REMOVE GENERIC TIMER LOGIC HERE ---
+  // All timer deduction/increment/timeout checking for classic and crazyhouse variants
+  // will now be handled *inside* their respective validateAndApplyMove functions.
+  // The only exception is SixPointer which has a unique time-out penalty mechanism.
+
+  // If it's sixpointer, handle its unique timer logic *before* calling its validator
+  // This logic should handle the point deduction and timer reset for a timeout
+  // before the move itself is validated or applied.
+  if (variant === 'sixpointer') {
+    if (!gameState.board.timers) { // Initialize if not present
+      gameState.board.timers = {
+        white: { remaining: 30000, lastUpdateTime: now, isRunning: true },
+        black: { remaining: 30000, lastUpdateTime: now, isRunning: false }
+      };
+    }
+    // Ensure both times are present for sixpointer
+    gameState.board.whiteTime = gameState.board.whiteTime ?? 30000;
+    gameState.board.blackTime = gameState.board.blackTime ?? 30000;
 
 
-  const color = (gameState.players.white.userId === userId) ? 'white' : (gameState.players.black.userId === userId) ? 'black' : null;
-  if (!color) return { type: 'game:error', message: 'User not a player in this game' };
-  if (gameState.status !== 'active') return { type: 'game:error', message: 'Game is not active' };
+    const currentSixPointerPlayerTime = gameState.board.timers[color].remaining;
+    const elapsed = now - (gameState.board.timers[color].lastUpdateTime || now);
 
-  // Initialize arrays/objects if missing
-  gameState.moves = gameState.moves || [];
-  gameState.positionHistory = gameState.positionHistory || [];
-  gameState.metadata = gameState.metadata || {};
-  gameState.metadata.drawOffers = gameState.metadata.drawOffers || { white: false, black: false };
+    // Update remaining time for the current player
+    gameState.board.timers[color].remaining = Math.max(0, currentSixPointerPlayerTime - elapsed);
+    gameState.board[`${color}Time`] = gameState.board.timers[color].remaining; // Sync board.whiteTime/blackTime
 
-  // --- TIMER LOGIC START ---
-  const now = timestamp || Date.now();
-  const opponentColor = color === 'white' ? 'black' : 'white';
+    if (gameState.board.timers[color].remaining <= 0) {
+      // Player timed out in SixPointer
+      const opponentColor = color === 'white' ? 'black' : 'white';
+      const pointsKey = color === 'white' ? 'whitePoints' : 'blackPoints';
+      gameState.board.points = gameState.board.points || { white: 0, black: 0 }; // Initialize if not exists
+      gameState.board.points[color] = Math.max(0, (gameState.board.points[color] || 0) - 1); // Deduct point
 
-  if (variant !== 'sixpointer') {
-    // Generic timer logic for non-sixpointer variants
-    if (!gameState.timers) {
-      gameState.timers = {
-        white: { remaining: 180000, lastUpdateTime: now, isRunning: true },
-        black: { remaining: 180000, lastUpdateTime: now, isRunning: false }
-      };
-    }
-    const elapsed = now - (gameState.timers[color].lastUpdateTime || now);
-    gameState.timers[color].remaining -= elapsed;
-    gameState.timers[color].lastUpdateTime = now;
-    gameState.timers[color].isRunning = false;
-    gameState.timers[opponentColor].isRunning = true;
-    gameState.timers[opponentColor].lastUpdateTime = now;
-    // If time runs out
-    if (gameState.timers[color].remaining <= 0) {
-      gameState.status = 'finished';
-      gameState.result = opponentColor;
-      gameState.resultReason = 'timeout';
-      gameState.winner = opponentColor;
-      gameState.endedAt = now;
-      await updateGameState(sessionId, gameState);
-      return { move: null, gameState };
-    }
-  } else {
-    // --- SIXPOINTER TIMER LOGIC ---
-    if (variant === 'sixpointer') {
-      if (!gameState.timers) {
-        gameState.timers = {
-          white: { remaining: 30000, lastUpdateTime: now, isRunning: true },
-          black: { remaining: 30000, lastUpdateTime: now, isRunning: false }
-        };
-      }
-      const elapsed = now - (gameState.timers[color].lastUpdateTime || now);
-      gameState.timers[color].remaining -= elapsed;
+      // Reset timers for both players and pass turn
+      gameState.board.timers.white.remaining = 30000;
+      gameState.board.timers.black.remaining = 30000;
+      gameState.board.timers.white.lastUpdateTime = now;
+      gameState.board.timers.black.lastUpdateTime = now;
+      gameState.board.timers.white.isRunning = (opponentColor === 'white');
+      gameState.board.timers.black.isRunning = (opponentColor === 'black');
 
-      // If time runs out for the current player
-      if (gameState.timers[color].remaining <= 0) {
-        // Reduce 1 point from the player who timed out
-        if (gameState.board.points) {
-          gameState.board.points[color] = Math.max(0, (gameState.board.points[color] || 0) - 1);
-        } else {
-          // fallback for legacy keys
-          const pointsKey = color === 'white' ? 'whitePoints' : 'blackPoints';
-          gameState.board[pointsKey] = Math.max(0, (gameState.board[pointsKey] || 0) - 1);
-        }
+      gameState.board.activeColor = opponentColor; // Pass turn
+      gameState.board.whiteTime = 30000; // Reset synced times
+      gameState.board.blackTime = 30000;
 
-        // Pass the turn to the opponent
-        gameState.board.activeColor = opponentColor;
+      await updateGameState(sessionId, gameState);
+      return {
+        type: 'game:warning',
+        message: `${color} timed out, 1 point deducted and turn passed to ${opponentColor}`,
+        move: null,
+        gameState
+      };
+    }
+    // If not timed out, update lastUpdateTime for the current player before passing to validator
+    gameState.board.timers[color].lastUpdateTime = now;
+  }
 
-        // Reset both timers
-        gameState.timers.white.remaining = 30000;
-        gameState.timers.black.remaining = 30000;
-        gameState.timers.white.lastUpdateTime = now;
-        gameState.timers.black.lastUpdateTime = now;
-        gameState.timers.white.isRunning = (opponentColor === 'white');
-        gameState.timers.black.isRunning = (opponentColor === 'black');
 
-        // Also reset whiteTime and blackTime for sixpointer
-        gameState.board.whiteTime = 30000;
-        gameState.board.blackTime = 30000;
+  // Determine which validator and legal moves function to use based on variant and subvariant
+  let validateFunc;
+  let legalMovesFunc;
 
-        await updateGameState(sessionId, gameState);
+  if (variant === 'classic') {
+    if (subvariant === 'standard') {
+      validateFunc = validateStandard;
+      legalMovesFunc = legalMovesStandard;
+    } else if (subvariant === 'blitz') {
+      validateFunc = validateBlitz;
+      legalMovesFunc = legalMovesBlitz;
+    } else if (subvariant === 'bullet') {
+      validateFunc = validateBullet;
+      legalMovesFunc = legalMovesBullet;
+    }
+  } else if (variant === 'crazyhouse') {
+    if (subvariant === 'standard') {
+      validateFunc = validateCzyStd;
+      legalMovesFunc = legalMovesCzyStnd;
+    } else if (subvariant === 'withTimer') {
+      validateFunc = validateCzyTimer;
+      legalMovesFunc = legalMovesCzyTimer;
+    }
+  } else if (variant === 'sixpointer') {
+    validateFunc = validateSixPointer;
+    legalMovesFunc = legalMovesSixPointer;
+  } else if (variant === 'decay') {
+    validateFunc = validateAndApplyDecayMove;
+    legalMovesFunc = getDecayLegalMoves;
+  }
 
-        return {
-          type: 'game:warning',
-          message: `${color} timed out, 1 point deducted and turn passed to ${opponentColor}`,
-          move: null,
-          gameState
-        };
-      }
+  if (!validateFunc || !legalMovesFunc) {
+    return { type: 'game:error', message: 'Invalid variant or subvariant' };
+  }
 
-      // Normal timer reset after a valid move (keep your existing logic here)
-      // ...
-    }
-  }
-  // --- TIMER LOGIC END ---
+  // For Crazyhouse variants, you need to pass the pocketedPieces for legal moves
+  let possibleMoves;
+  if (variant === 'crazyhouse') {
+    possibleMoves = legalMovesFunc(gameState.board.fen, gameState.board.pocketedPieces, color);
+  } else {
+    possibleMoves = legalMovesFunc(gameState.board.fen);
+  }
 
-  // Validate that the move is one of the possible moves
-  const fen = gameState.board.fen;
-  console.log("Current FEN:", fen);
-  let possibleMoves;
-  if (variant === 'classic' && subvariant === 'standard') {
-    possibleMoves = legalMovesStandard(fen).filter(m => m.from === move.from);
-  } else if (variant === 'classic' && subvariant === 'blitz') {
-    possibleMoves = legalMovesBlitz(fen).filter(m => m.from === move.from);
-  } else if(variant === 'classic' && subvariant === 'bullet') {
-    possibleMoves = legalMovesBullet(fen).filter(m => m.from === move.from);
-  } else if(variant === 'sixpointer') {
-    possibleMoves = legalMovesSixPointer(fen).filter(m => m.from === move.from);
-  } else if(variant === 'decay') {
-    possibleMoves = getDecayLegalMoves(fen).filter(m => m.from === move.from); // Assuming decay uses standard moves for now
-  } else if (variant === 'crazyhouse' && subvariant === 'standard') {
-    possibleMoves = legalMovesCzyStnd(fen).filter(m => m.from === move.from);
-  } else if (variant === 'crazyhouse' && subvariant === 'withTimer') {
-    possibleMoves = legalMovesCzyTimer(fen).filter(m => m.from === move.from);
-  } else {
-    return { type: 'game:error', message: 'Invalid variant or subvariant'};
-  }
-  
-  console.log("Moves received:", move);
-  console.log("Possible moves for square", move.from, ":", possibleMoves);
+  console.log("Moves received:", move);
+  // Filtering legal moves for a specific 'from' square is only relevant for board moves, not drops
+  const isMoveLegal = possibleMoves && possibleMoves.some(m =>
+    (m.from === move.from && m.to === move.to && (!m.promotion || m.promotion === move.promotion)) ||
+    (move.type === 'drop' && m.from === 'pocket' && m.to === move.to && m.piece === move.piece)
+  );
 
-  const isMoveLegal = possibleMoves && possibleMoves.some(m => m.from === move.from && m.to === move.to && (!m.promotion || m.promotion === move.promotion));
-  if (!isMoveLegal) {
-    return { type: 'game:warning', message: 'Move is not legal' };
-  }
+  if (!isMoveLegal) {
+    return { type: 'game:warning', message: 'Move is not legal' };
+  }
 
-  // Apply move
-  let result;
-  if (variant === 'classic' && subvariant === 'standard') {
-    result = validateStandard(gameState.board, move, color, timestamp);
-  } else if (variant === 'classic' && subvariant === 'blitz') {
-    result = validateBlitz(gameState.board, move, color, timestamp);
-  } else if(variant === 'classic' && subvariant === 'bullet') {
-    result = validateBullet(gameState.board, move, color, timestamp);
-  } else if(variant === 'sixpointer') {
-    result = validateSixPointer(gameState.board, move, color, timestamp);
-  } else if(variant === 'decay') {
-    result = validateAndApplyDecayMove(gameState.board, move, color, timestamp);
-  } else if (variant === 'crazyhouse' && subvariant === 'standard') {
-    result = validateCzyStd(gameState.board, move, color, timestamp);
-  } else if (variant === 'crazyhouse' && subvariant === 'withTimer') {
-    result = validateCzyTimer(gameState.board, move, color, timestamp);
-  }
-  console.log("Move result:", result);
-  if (!result.valid) {
-    // Instead of returning, attach a warning and return the unchanged game state
-    
-    return { 
-      type: 'game:warning', 
-      message: result.reason || 'Invalid move', 
-      move: null, 
-      gameState // return the current state so the frontend can continue
-    };
-  }
+  // Apply move using the variant-specific validator
+  // Pass the current gameState.board (which contains FEN, pocketedPieces, timers, etc.)
+  // and the timestamp for accurate timer calculations within the validator.
+  const result = validateFunc(gameState.board, move, color, now);
+  console.log("Move validation result from variant validator:", result);
 
-  // Update game state
-  gameState.board = result.state;
-  gameState.moves.push(result.move);
-  gameState.moveCount = (gameState.moveCount || 0) + 1;
-  gameState.lastMove = result.move;
-  gameState.positionHistory.push(result.state.fen);
-  gameState.gameState = result;
+  if (!result.valid) {
+    return {
+      type: 'game:warning',
+      message: result.reason || 'Invalid move',
+      move: null,
+      gameState // return the current state so the frontend can continue
+    };
+  }
 
-  if(variant === 'sixpointer') {
-    resetSixPointerTimer(gameState); // Call BEFORE changing activeColor
-    // Also reset whiteTime and blackTime for sixpointer
-    gameState.board.whiteTime = 30000;
-    gameState.board.blackTime = 30000;
-  }
+  // Update game state using the *entire* state object returned by the validator
+  // This ensures that all changes (FEN, timers, activeColor, pocketedPieces, gameEnded status)
+  // are consistently applied.
+  gameState.board = result.state; // This is the fully updated board state from the validator
+  gameState.moves.push(result.move);
+  gameState.moveCount = (gameState.moveCount || 0) + 1;
+  gameState.lastMove = result.move;
+  gameState.positionHistory.push(result.state.fen);
+  gameState.gameState = result; // Store the validation result itself if useful for frontend
 
-  // Change activeColor to next player
-  gameState.board.activeColor = (color === 'white') ? 'black' : 'white';
+  // **IMPORTANT:**
+  // The `result.state` from the `validateAndApply...Move` functions
+  // should already contain the updated `activeColor`, `whiteTime`, `blackTime`,
+  // and for Crazyhouse `pocketedPieces`, and `dropTimers` (if withTimer).
+  // So, remove manual updates to these here:
+  // gameState.board.activeColor = (color === 'white') ? 'black' : 'white'; // REMOVE THIS LINE
+  // gameState.board.timers = gameState.timers; // This mapping should ideally happen when storing the state
 
-  // Attach timers to board for frontend
-  gameState.board.timers = gameState.timers;
+  // For SixPointer, the specific timer reset logic after a valid move needs to be handled here
+  // (as it affects both players' times based on the custom rule).
+  // Note: the `validateSixPointer` already adds increment, this is for the *reset* after a move.
+  if (variant === 'sixpointer') {
+    resetSixPointerTimer(gameState); // This function should reset both timers to 30s.
+    // Sync the board's time properties with the timers
+    gameState.board.whiteTime = gameState.board.timers.white.remaining;
+    gameState.board.blackTime = gameState.board.timers.black.remaining;
+  }
 
-  // Check for game end
-  if (result.result && result.result !== 'ongoing') {
-    gameState.status = 'finished';
-    gameState.result = result.result;
-    gameState.resultReason = result.reason || null;
-    gameState.winner = result.winner || null;
-    gameState.endedAt = Date.now();
-    // Persist to MongoDB
-    // await Game.findOneAndUpdate(
-    //   { sessionId },
-    //   {
-    //     $set: {
-    //       moves: gameState.moves,
-    //       state: gameState.board,
-    //       winner: gameState.winnerId,
-    //       result: gameState.result,
-    //       endedAt: gameState.endedAt,
-    //     },
-    //   },
-    //   { upsert: true }
-    // );
-  } else {
-    // Update only moves and state
-    // await Game.findOneAndUpdate(
-    //   { sessionId },
-    //   {
-    //     $set: {
-    //       moves: gameState.moves,
-    //       state: gameState.board,
-    //     },
-    //   },
-    //   { upsert: true }
-    // );
-    console.log("Game is still active, no end condition met");
-  }
 
-  await updateGameState(sessionId, gameState);
-  console.log("Game state after move:", gameState);
-  return { move: result.move, gameState };
+  // Check for game end. The `result` object from the validator should contain this.
+  if (result.gameEnded) { // Assuming result.gameEnded is a boolean
+    gameState.status = 'finished';
+    gameState.result = result.result; // e.g., 'checkmate', 'timeout', 'draw'
+    gameState.resultReason = result.endReason || null; // e.g., 'checkmate', 'white ran out of time'
+    gameState.winner = result.winnerColor || null; // 'white' or 'black'
+    gameState.endedAt = result.endTimestamp || now;
+  } else {
+    console.log("Game is still active, no end condition met");
+  }
+
+  await updateGameState(sessionId, gameState);
+  console.log("Game state after move:", gameState);
+  return { move: result.move, gameState };
 }
 
 // Get possible moves for a piece
 export async function getPossibleMoves({ sessionId, square, variant, subvariant }) {
-    console.log("Getting possible moves for square:", square);
-  const session = await getSessionById(sessionId);
-  if (!session) throw new Error('Session not found');
-  const { gameState } = session;
-  const fen = gameState.board.fen;
-  let moves;
-  if (variant === 'classic' && subvariant === 'standard') {
-    moves = legalMovesStandard(fen).filter(m => m.from === square);
-  } else if (variant === 'classic' && subvariant === 'blitz') {
-    moves = legalMovesBlitz(fen).filter(m => m.from === square);
-  } else if(variant === 'classic' && subvariant === 'bullet') {
-    moves = legalMovesBullet(fen).filter(m => m.from === square);
-  } else if(variant === 'sixpointer') {
-    moves = legalMovesSixPointer(fen).filter(m => m.from === square);
-  } else if(variant === 'decay') {
-    moves = getDecayLegalMoves(fen).filter(m => m.from === square); //
-  } else if (variant === 'crazyhouse' && subvariant === 'standard') {
-    moves = legalMovesCzyStnd(fen).filter(m => m.from === square);
-  } else if (variant === 'crazyhouse' && subvariant === 'withTimer') {
-    moves = legalMovesCzyTimer(fen).filter(m => m.from === square);
-  } else {
-    throw new Error('Invalid variant or subvariant');
-  }
-  // const moves = legalMovesStandard(fen).filter(m => m.from === square);
-  return moves;
+  console.log("Getting possible moves for square:", square);
+  const session = await getSessionById(sessionId);
+  if (!session) throw new Error('Session not found');
+  const { gameState } = session;
+  const fen = gameState.board.fen;
+
+  let legalMovesFunc;
+  if (variant === 'classic') {
+    if (subvariant === 'standard') {
+      legalMovesFunc = legalMovesStandard;
+    } else if (subvariant === 'blitz') {
+      legalMovesFunc = legalMovesBlitz;
+    } else if (subvariant === 'bullet') {
+      legalMovesFunc = legalMovesBullet;
+    }
+  } else if (variant === 'crazyhouse') {
+    if (subvariant === 'standard') {
+      legalMovesFunc = legalMovesCzyStnd;
+    } else if (subvariant === 'withTimer') {
+      legalMovesFunc = legalMovesCzyTimer;
+    }
+  } else if (variant === 'sixpointer') {
+    legalMovesFunc = legalMovesSixPointer;
+  } else if (variant === 'decay') {
+    legalMovesFunc = getDecayLegalMoves;
+  }
+
+  if (!legalMovesFunc) {
+    throw new Error('Invalid variant or subvariant');
+  }
+
+  let moves;
+  if (variant === 'crazyhouse') {
+    // For Crazyhouse, pass pocketedPieces and playerColor
+    const playerColor = (gameState.board.activeColor === 'w') ? 'white' : 'black'; // Or derive from `gameState.players`
+    moves = legalMovesFunc(fen, gameState.board.pocketedPieces, playerColor);
+    // If `square` is 'pocket', return all drop moves for the current player
+    if (square === 'pocket') {
+      return moves.filter(m => m.from === 'pocket');
+    }
+    // Otherwise, filter by the specific square for board moves
+    return moves.filter(m => m.from === square);
+  } else {
+    // For classic variants, just filter by 'from' square
+    moves = legalMovesFunc(fen).filter(m => m.from === square);
+  }
+  return moves;
 }
 
-// Resign
+// Resign (No changes needed, as it's a global game action)
 export async function resign({ sessionId, userId }) {
-  const session = await getSessionById(sessionId);
-  if (!session) throw new Error('Session not found');
-  const { gameState } = session
-  if (gameState.status !== 'active') throw new Error('Game is not active');
-  const color = (gameState.players.white.userId === userId) ? 'white' : (gameState.players.black.userId === userId) ? 'black' : null;
-  if (!color) throw new Error('User not a player in this game');
-  const winner = color === 'white' ? 'black' : 'white';
-  gameState.status = 'finished';
-  gameState.result = winner;
-  gameState.resultReason = 'resignation';
-  gameState.winner = winner;
-  gameState.endedAt = Date.now();
-  await updateGameState(sessionId, gameState);
-  // await Game.findOneAndUpdate(
-  //   { sessionId },
-  //   {
-  //     $set: {
-  //       winner: gameState.winner,
-  //       result: gameState.result,
-  //       endedAt: gameState.endedAt,
-  //     },
-  //   },
-  //   { upsert: true }
-  // );
-  return { gameState };
+  const session = await getSessionById(sessionId);
+  if (!session) throw new Error('Session not found');
+  const { gameState } = session
+  if (gameState.status !== 'active') throw new Error('Game is not active');
+  const color = (gameState.players.white.userId === userId) ? 'white' : (gameState.players.black.userId === userId) ? 'black' : null;
+  if (!color) throw new Error('User not a player in this game');
+  const winner = color === 'white' ? 'black' : 'white';
+  gameState.status = 'finished';
+  gameState.result = winner;
+  gameState.resultReason = 'resignation';
+  gameState.winner = winner;
+  gameState.endedAt = Date.now();
+  await updateGameState(sessionId, gameState);
+  return { gameState };
 }
 
-// Offer draw
+// Offer draw (No changes needed)
 export async function offerDraw({ sessionId, userId }) {
-  const session = await getSessionById(sessionId);
-  if (!session) throw new Error('Session not found');
-  const { gameState } = session;
-  if (gameState.status !== 'active') throw new Error('Game is not active');
-  const color = (gameState.players.white.userId === userId) ? 'white' : (gameState.players.black.userId === userId) ? 'black' : null;
-  if (!color) throw new Error('User not a player in this game');
-  gameState.metadata.drawOffers[color] = true;
-  await updateGameState(sessionId, gameState);
-  return { gameState };
+  const session = await getSessionById(sessionId);
+  if (!session) throw new Error('Session not found');
+  const { gameState } = session;
+  if (gameState.status !== 'active') throw new Error('Game is not active');
+  const color = (gameState.players.white.userId === userId) ? 'white' : (gameState.players.black.userId === userId) ? 'black' : null;
+  if (!color) throw new Error('User not a player in this game');
+  gameState.metadata.drawOffers[color] = true;
+  await updateGameState(sessionId, gameState);
+  return { gameState };
 }
 
-// Accept draw
+// Accept draw (No changes needed)
 export async function acceptDraw({ sessionId, userId }) {
-  const session = await getSessionById(sessionId);
-  if (!session) throw new Error('Session not found');
-  const { gameState } = session;
-  if (gameState.status !== 'active') throw new Error('Game is not active');
-  const color = (gameState.players.white.userId === userId) ? 'white' : (gameState.players.black.userId === userId) ? 'black' : null;
-  if (!color) throw new Error('User not a player in this game');
-  // Only allow if opponent offered draw
-  const oppColor = color === 'white' ? 'black' : 'white';
-  if (!gameState.metadata.drawOffers[oppColor]) throw new Error('No draw offer from opponent');
-  gameState.status = 'finished';
-  gameState.result = 'draw';
-  gameState.resultReason = 'mutual_agreement';
-  gameState.winner = null;
-  gameState.endedAt = Date.now();
-  await updateGameState(sessionId, gameState);
-  // await Game.findOneAndUpdate(
-  //   { sessionId },
-  //   {
-  //     $set: {
-  //       result: 'draw',
-  //       endedAt: gameState.endedAt,
-  //     },
-  //   },
-  //   { upsert: true }
-  // );
-  return { gameState };
+  const session = await getSessionById(sessionId);
+  if (!session) throw new Error('Session not found');
+  const { gameState } = session;
+  if (gameState.status !== 'active') throw new Error('Game is not active');
+  const color = (gameState.players.white.userId === userId) ? 'white' : (gameState.players.black.userId === userId) ? 'black' : null;
+  if (!color) throw new Error('User not a player in this game');
+  // Only allow if opponent offered draw
+  const oppColor = color === 'white' ? 'black' : 'white';
+  if (!gameState.metadata.drawOffers[oppColor]) throw new Error('No draw offer from opponent');
+  gameState.status = 'finished';
+  gameState.result = 'draw';
+  gameState.resultReason = 'mutual_agreement';
+  gameState.winner = null;
+  gameState.endedAt = Date.now();
+  await updateGameState(sessionId, gameState);
+  return { gameState };
 }
 
-// Decline draw
+// Decline draw (No changes needed)
 export async function declineDraw({ sessionId, userId }) {
-  const session = await getSessionById(sessionId);
-  if (!session) throw new Error('Session not found');
-  const { gameState } = session;
-  if (gameState.status !== 'active') throw new Error('Game is not active');
-  const color = (gameState.players.white.userId === userId) ? 'white' : (gameState.players.black.userId === userId) ? 'black' : null;
-  if (!color) throw new Error('User not a player in this game');
-  const oppColor = color === 'white' ? 'black' : 'white';
-  gameState.metadata.drawOffers[oppColor] = false;
-  await updateGameState(sessionId, gameState);
-  return { gameState };
+  const session = await getSessionById(sessionId);
+  if (!session) throw new Error('Session not found');
+  const { gameState } = session;
+  if (gameState.status !== 'active') throw new Error('Game is not active');
+  const color = (gameState.players.white.userId === userId) ? 'white' : (gameState.players.black.userId === userId) ? 'black' : null;
+  if (!color) throw new Error('User not a player in this game');
+  const oppColor = color === 'white' ? 'black' : 'white';
+  gameState.metadata.drawOffers[oppColor] = false;
+  await updateGameState(sessionId, gameState);
+  return { gameState };
 }
