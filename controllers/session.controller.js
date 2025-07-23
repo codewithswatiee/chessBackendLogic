@@ -7,7 +7,7 @@ import redisClient, {
 import { createInitialState as createStandardInitialState, convertBigIntToNumber } from '../validations/classic/standard.js';
 import { createInitialState as createBlitzInitialState } from '../validations/classic/blitz.js';
 import { createInitialState as createBulletInitialState} from '../validations/classic/bullet.js';
-import { createInitialState as createSixPointerInitialState } from '../validations/sixPointer.js';
+import { createInitialState as createSixPointerInitialState, generateRandomBalancedPosition } from '../validations/sixPointer.js';
 import { createDecayInitialState } from '../validations/decay.js';
 import { createCrazyhouseStandardInitialState as createCzyStndInitState} from '../validations/crazyhouse/crazyhouseStandard.js';
 import { createCrazyhouseInitialState as createCzyTimerInitState } from '../validations/crazyhouse/crazyhouseTimer.js';
@@ -46,6 +46,7 @@ const GAME_VARIANTS = {
   decay:{
     name: 'decay',
     description: 'A variant of chess where pieces decay over time, adding a new layer of strategy.',
+    initialFen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
   },
   crazyhouse: {
     name: 'crazyhouse',
@@ -53,12 +54,14 @@ const GAME_VARIANTS = {
       standard: {
         name: 'standard',
         timeControl: { base: 3 * 60 * 1000, increment: 2000 }, // 10 minutes
-        description: 'Crazyhouse chess with 3 minutes base + 2 second increment'
+        description: 'Crazyhouse chess with 3 minutes base + 2 second increment',
+        initialFen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
       },
       withTimer: {
         name: 'withTimer',
         timeControl: { base: 3 * 60 * 1000, increment: 2000 }, // 3+2
-        description: 'Crazyhouse chess with 3 minutes base + 2 second increment'
+        description: 'Crazyhouse chess with 3 minutes base + 2 second increment',
+        initialFen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
       }
     }
   }
@@ -174,7 +177,9 @@ function createInitialGameState(variant, subvariant, whitePlayer, blackPlayer, t
   const gameConfig = GAME_VARIANTS[variant].subvariants
     ? GAME_VARIANTS[variant].subvariants[subvariant]
     : GAME_VARIANTS[variant];
-  const fenData = parseFen(gameConfig.initialFen || ""); // fallback for sixPoint
+
+  const randonFen = generateRandomBalancedPosition();
+  const fenData = variant === 'sixpointer' ? randonFen : parseFen(gameConfig.initialFen);
   const now = Date.now();
   const timeControl = gameConfig.timeControl || {};
 

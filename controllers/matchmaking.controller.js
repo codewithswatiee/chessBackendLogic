@@ -226,11 +226,7 @@ export async function joinQueue({ userId, socketId, variant, subvariant, io }) {
         }
 
         let rank = userDoc.ratings
-        // If variant rank is undefined, use default 1200
-        if (rank === undefined || rank === null) {
-            rank = 1200;
-            console.warn(`[joinQueue] No rank for user ${userId} in variant ${variant}, using default ${rank}`);
-        }
+        
 
         const now = Date.now();
         const score = parseFloat(rank) + (now / 1e13); // Ensure rank is float for score calculation
