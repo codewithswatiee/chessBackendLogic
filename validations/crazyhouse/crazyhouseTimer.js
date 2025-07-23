@@ -143,11 +143,10 @@ export function createCrazyhouseInitialState() {
       winner: null,
       endTimestamp: null,
       pocketedPieces: {
-        white: [], // Pieces captured by white (black pieces) - stored as type 'p', 'n', 'b', 'r', 'q'
+        white: [], // Pieces captured by white (black pieces) - stored as { type: 'p', id: 'unique_id', capturedAt: timestamp }
         black: [], // Pieces captured by black (white pieces)
       },
-      // Maps to store drop timers: key is a unique piece identifier, value is expiration timestamp
-      // Example: { 'b_1700000000000': 1700000010000 } (piece type + timestamp it was captured)
+      // Maps to store drop timers: key is piece ID, value is expiration timestamp
       dropTimers: {
         white: new Map(),
         black: new Map(),
@@ -157,6 +156,7 @@ export function createCrazyhouseInitialState() {
         white: [],
         black: [],
       },
+      repetitionMap: new Map(),
     }
   } catch (error) {
     console.error("Error creating crazyhouse initial state:", error)
@@ -172,78 +172,98 @@ function updateCrazyhouseTimers(state, currentTimestamp) {
   const currentPlayer = game.turn()
   const currentPlayerColor = currentPlayer === "w" ? "white" : "black"
 
-  // Deduct time from current player's main clock
-  if (state.gameStarted && state.turnStartTimestamp) {
-    const elapsed = currentTimestamp - state.turnStartTimestamp
-    if (currentPlayer === "w") {
-      state.whiteTime = Math.max(0, state.whiteTime - elapsed)
-    } else {
-      state.blackTime = Math.max(0, state.blackTime - elapsed)
-    }
-  }
+  for (const color of ["white", "black"]) {
+    const pocket = state.pocketedPieces[color]
+    const timers = state.dropTimers[color]
 
-  // Sequential drop timer logic - ONLY for the active player
-  const activeColorForDropTimer = currentPlayerColor // The player whose turn it is
-  const pocket = state.pocketedPieces[activeColorForDropTimer]
-  const timers = state.dropTimers[activeColorForDropTimer]
+    if (pocket.length === 0 || timers.size === 0) continue
 
-  if (pocket.length > 0 && timers.size > 0) {
-    const firstPiece = pocket[0]
-    const timerKey = firstPiece.id
-    const expirationTimestamp = timers.get(timerKey)
+    // Only update timer for the player whose turn it is
+    if (color === currentPlayerColor) {
+      const firstPiece = pocket[0]
+      const timerKey = firstPiece.id
+      let expirationTimestamp = timers.get(timerKey)
 
-    // If the timer for the active player's droppable piece has expired
-    if (expirationTimestamp && currentTimestamp >= expirationTimestamp) {
-      // Remove expired piece from pocket and timer
-      pocket.shift()
-      timers.delete(timerKey)
-      console.log(`Removed expired ${firstPiece.type} from ${activeColorForDropTimer}'s pocket due to timeout.`)
+      // If timer hasn't started yet, start it now
+      if (!expirationTimestamp) {
+        timers.set(timerKey, currentTimestamp + DROP_TIME_LIMIT)
+        expirationTimestamp = timers.get(timerKey)
+      }
 
-      // Start timer for next piece, if any, for the *same* player
-      if (pocket.length > 0) {
-        const nextPiece = pocket[0]
-        timers.set(nextPiece.id, currentTimestamp + DROP_TIME_LIMIT)
-        console.log(`Started timer for next piece ${nextPiece.type} in ${activeColorForDropTimer}'s pocket.`)
+      // If timer expired, move piece to frozen
+      if (currentTimestamp >= expirationTimestamp) {
+        // Remove expired piece from pocket and timer
+        pocket.shift()
+        timers.delete(timerKey)
+        state.frozenPieces[color].push(firstPiece)
+        console.log(`Piece ${firstPiece.type} expired for ${color}, moved to frozen.`)
+
+        // Start timer for next piece, if any
+        if (pocket.length > 0) {
+          const nextPiece = pocket[0]
+          timers.set(nextPiece.id, currentTimestamp + DROP_TIME_LIMIT)
+        }
       }
     }
+    // For opponent, do NOT decrement timer or start timer
   }
-  // frozenPieces will be derived when the state is returned
 }
 
-// Handle piece drop logic
+// Handle piece drop logic - enhanced with better validation
 function handlePieceDrop(state, move, playerColor, game) {
   const playerPocket = state.pocketedPieces[playerColor]
   const playerDropTimers = state.dropTimers[playerColor]
   const now = Date.now()
 
-  console.log(`Handling piece drop for ${playerColor}:`, state.pocketedPieces, "Timers:", state.dropTimers)
+  console.log(`Handling piece drop for ${playerColor}:`, {
+    pocket: playerPocket,
+    timers: Object.fromEntries(playerDropTimers),
+    move,
+  })
 
-  // Sequential drop: only first piece in pocket is available
+  // Check if pocket has pieces
   if (playerPocket.length === 0) {
     return { valid: false, reason: "No pieces in pocket", code: "PIECE_NOT_IN_POCKET" }
   }
 
+  // Sequential drop: only first piece in pocket is available
   const firstPiece = playerPocket[0]
   if (move.piece !== firstPiece.type) {
-    return { valid: false, reason: `Only ${firstPiece.type} can be dropped next`, code: "SEQUENTIAL_DROP_ONLY" }
+    return {
+      valid: false,
+      reason: `Only ${firstPiece.type} can be dropped next. Current queue: ${playerPocket.map((p) => p.type).join(", ")}`,
+      code: "SEQUENTIAL_DROP_ONLY",
+    }
   }
 
   const timerKey = firstPiece.id
-  const expirationTimestamp = playerDropTimers.get(timerKey)
+  let expirationTimestamp = playerDropTimers.get(timerKey)
 
-  if (!expirationTimestamp) {
-    return { valid: false, reason: `No timer found for piece ${firstPiece.type}`, code: "PIECE_NOT_AVAILABLE" }
+  // If timer is not in the active map, check if it's paused on the piece itself
+  if (!expirationTimestamp && firstPiece.timerPaused && firstPiece.remainingTime !== undefined) {
+    expirationTimestamp = now + firstPiece.remainingTime // Calculate effective expiration
   }
 
+  // Check if piece has an active timer (either in map or paused on piece)
+  if (!expirationTimestamp) {
+    return { valid: false, reason: `No active timer found for piece ${firstPiece.type}`, code: "PIECE_NOT_AVAILABLE" }
+  }
+
+  // Check if piece timer has expired
   if (now >= expirationTimestamp) {
-    // Piece expired, remove from pocket and timer
+    // Auto-remove expired piece
     playerPocket.shift()
     playerDropTimers.delete(timerKey)
+    delete firstPiece.timerPaused // Clean up paused flag
+    delete firstPiece.remainingTime // Clean up remaining time
+
     // Start timer for next piece, if any
     if (playerPocket.length > 0) {
       const nextPiece = playerPocket[0]
       playerDropTimers.set(nextPiece.id, now + DROP_TIME_LIMIT)
+      console.log(`Started timer for next piece ${nextPiece.type} after expired drop attempt.`)
     }
+
     console.warn(`Attempted to drop expired piece: ${firstPiece.type}. Removed from pocket.`)
     return { valid: false, reason: `Piece ${firstPiece.type} drop limit expired`, code: "DROP_EXPIRED" }
   }
@@ -253,25 +273,62 @@ function handlePieceDrop(state, move, playerColor, game) {
   if (firstPiece.type.toLowerCase() === "p" && (targetRank === 1 || targetRank === 8)) {
     return { valid: false, reason: "Pawns cannot be dropped on 1st or 8th rank", code: "INVALID_PAWN_DROP" }
   }
+
   if (game.get(move.to)) {
     return { valid: false, reason: "Cannot drop on an occupied square", code: "SQUARE_OCCUPIED" }
   }
 
-  // Apply the drop
+  // Create a test game to validate the drop doesn't put player in check
+  const testGame = new Chess(game.fen())
+  try {
+    testGame.put({ type: firstPiece.type, color: playerColor === "white" ? "w" : "b" }, move.to)
+
+    // Check if this puts the current player in check (illegal)
+    if (testGame.inCheck() && testGame.turn() === (playerColor === "white" ? "w" : "b")) {
+      return { valid: false, reason: "Drop would leave king in check", code: "SELF_CHECK" }
+    }
+  } catch (error) {
+    console.error("Chess.js put error during drop validation:", error)
+    return { valid: false, reason: "Illegal drop: " + error.message, code: "CHESS_JS_ERROR" }
+  }
+
+  // Apply the drop to the actual game
   try {
     game.put({ type: firstPiece.type, color: playerColor === "white" ? "w" : "b" }, move.to)
-    playerPocket.shift() // Remove from pocket
-    playerDropTimers.delete(timerKey) // Remove timer
+
+    // --- IMPORTANT: Manually advance the turn for drops ---
+    const currentFenParts = game.fen().split(" ")
+    currentFenParts[1] = currentFenParts[1] === "w" ? "b" : "w" // Toggle active color
+    game.load(currentFenParts.join(" ")) // Load the updated FEN back into the game object
+    // --- End of turn advancement for drops ---
+
+    // Remove from pocket and timer
+    playerPocket.shift()
+    playerDropTimers.delete(timerKey)
+    delete firstPiece.timerPaused // Clean up paused flag
+    delete firstPiece.remainingTime // Clean up remaining time
 
     // Start timer for next piece, if any
     if (playerPocket.length > 0) {
       const nextPiece = playerPocket[0]
       playerDropTimers.set(nextPiece.id, now + DROP_TIME_LIMIT)
+      console.log(`Started timer for next piece ${nextPiece.type} after successful drop.`)
     }
 
-    return { valid: true, game: game }
+    return {
+      valid: true,
+      game: game,
+      result: {
+        type: "d", // drop flag
+        piece: firstPiece.type,
+        to: move.to,
+        from: "pocket",
+        san: `${firstPiece.type.toUpperCase()}@${move.to}`,
+        color: playerColor === "white" ? "w" : "b",
+      },
+    }
   } catch (error) {
-    console.error("Chess.js put error during drop:", error)
+    console.error("Chess.js put error during actual drop:", error)
     return { valid: false, reason: "Illegal drop: " + error.message, code: "CHESS_JS_ERROR" }
   }
 }
@@ -331,31 +388,36 @@ export function validateAndApplyCrazyhouseMove(state, move, playerColor, current
 
     let moveResult
     let isDrop = false
+
     if (move.drop === true) {
       isDrop = true
       moveResult = handlePieceDrop(state, move, playerColor, game)
     } else {
       // Standard chess move
       moveResult = validateChessMove(state, move, playerColor, currentTimestamp)
-
-      // If it's a capture, add to pocketedPieces and start drop timer if pocket was empty
+      // If it's a capture, add to pocketedPieces and manage drop timers
       if (moveResult.valid && moveResult.capturedPiece) {
         const capturedPieceType = moveResult.capturedPiece.type.toLowerCase()
         const capturingPlayerColor = playerColor
-        const pieceId = `${capturedPieceType}_${Date.now()}`
-        const pieceObj = { type: capturedPieceType, id: pieceId, capturedAt: currentTimestamp }
-
+        const pieceId = `${capturedPieceType}_${currentTimestamp}_${Math.random().toString(36).substr(2, 9)}`
+        const pieceObj = {
+          type: capturedPieceType,
+          id: pieceId,
+          capturedAt: currentTimestamp,
+        }
         const pocket = state.pocketedPieces[capturingPlayerColor]
         const timers = state.dropTimers[capturingPlayerColor]
-
         const wasEmpty = pocket.length === 0
         pocket.push(pieceObj)
 
-        if (wasEmpty) {
+        // Start timer immediately if this is the first piece, or if no timer exists for first piece
+        if (wasEmpty || (pocket.length === 1 && !timers.has(pieceObj.id))) {
           timers.set(pieceId, currentTimestamp + DROP_TIME_LIMIT)
+          console.log(`Started immediate timer for captured ${capturedPieceType} by ${capturingPlayerColor}.`)
         }
-        // If not empty, timer will be started when previous piece is dropped/expired
-        console.log(`${capturingPlayerColor} captured ${capturedPieceType}. Added to pocket.`)
+        // If not the first piece, timer will be started when previous pieces are used/expired
+
+        console.log(`${capturingPlayerColor} captured ${capturedPieceType}. Pocket now has ${pocket.length} pieces.`)
       }
     }
 
@@ -372,7 +434,13 @@ export function validateAndApplyCrazyhouseMove(state, move, playerColor, current
       finalizeGameEnd(state, gameStatus, currentTimestamp)
     }
 
-    console.log("======= Drop Timers State =======", state.dropTimers)
+    console.log("=== Final State ===")
+    console.log("Drop Timers:", {
+      white: Object.fromEntries(state.dropTimers.white),
+      black: Object.fromEntries(state.dropTimers.black),
+    })
+    console.log("Pocketed Pieces:", state.pocketedPieces)
+
     if (state.game) delete state.game // Clean up temp Chess instance
     console.log("=== CRAZYHOUSE MOVE VALIDATION END ===")
 
@@ -388,12 +456,12 @@ export function validateAndApplyCrazyhouseMove(state, move, playerColor, current
   }
 }
 
-// Helper functions for better organization (largely reused from decay, with adjustments)
+// Helper functions for better organization
 function validateInputs(state, move, playerColor) {
   if (!state || typeof state !== "object") return false
-  // Move can be a standard move { from, to } or a drop { type: 'drop', piece: 'p', to: 'e4' }
   if (!move || typeof move !== "object") return false
   if (!playerColor || (playerColor !== "white" && playerColor !== "black")) return false
+
   if (move.drop === true) {
     if (!move.piece || !move.to) return false
   } else {
@@ -410,21 +478,30 @@ function initializeStateDefaults(state, currentTimestamp) {
   if (!state.moveHistory) state.moveHistory = []
   if (typeof state.gameStarted !== "boolean") state.gameStarted = false
   if (!state.firstMoveTimestamp) state.firstMoveTimestamp = null
-  if (!state.capturedPieces) state.capturedPieces = { white: [], black: [] } // Legacy, now pocketedPieces
   if (!state.pocketedPieces) state.pocketedPieces = { white: [], black: [] }
-  if (!state.dropTimers) state.dropTimers = { white: new Map(), black: new Map() }
-  else {
+
+  if (!state.dropTimers) {
+    state.dropTimers = { white: new Map(), black: new Map() }
+  } else {
     // Ensure Maps are rehydrated if they come from a plain object (e.g., database)
-    state.dropTimers.white = new Map(Object.entries(state.dropTimers.white || {}))
-    state.dropTimers.black = new Map(Object.entries(state.dropTimers.black || {}))
+    if (!(state.dropTimers.white instanceof Map)) {
+      state.dropTimers.white = new Map(Object.entries(state.dropTimers.white || {}))
+    }
+    if (!(state.dropTimers.black instanceof Map)) {
+      state.dropTimers.black = new Map(Object.entries(state.dropTimers.black || {}))
+    }
   }
+
   if (typeof state.gameEnded !== "boolean") state.gameEnded = false
-  if (!state.frozenPieces) state.frozenPieces = { white: [], black: [] } // Initialize if not present
+  if (!state.frozenPieces) state.frozenPieces = { white: [], black: [] }
+  if (!state.repetitionMap) {
+    state.repetitionMap = new Map()
+  } else if (!(state.repetitionMap instanceof Map)) {
+    state.repetitionMap = new Map(Object.entries(state.repetitionMap || {}))
+  }
 }
 
 function checkForTimeout(state, currentTimestamp) {
-  // We already updated timers in updateCrazyhouseTimers before calling this.
-  // So, just check the current state of times.
   if (state.whiteTime <= 0) {
     return createTimeoutResult(state, "black", "White ran out of time", currentTimestamp)
   }
@@ -438,8 +515,9 @@ function createTimeoutResult(state, winner, reason, currentTimestamp) {
   state.gameEnded = true
   state.endReason = "timeout"
   state.winnerColor = winner
-  state.winner = null // Assuming winner username/ID comes from outside state.players
+  state.winner = null
   state.endTimestamp = currentTimestamp
+
   return {
     valid: false,
     reason: reason,
@@ -454,15 +532,7 @@ function createTimeoutResult(state, winner, reason, currentTimestamp) {
 }
 
 function validateChessMove(state, move, playerColor, currentTimestamp) {
-  const game = state.game // Chess instance already created in main function
-
-  // Check turn (already done in main function, but good for self-contained helper)
-  const currentPlayerBeforeMove = game.turn()
-  const currentPlayerColor = currentPlayerBeforeMove === "w" ? "white" : "black"
-  if (currentPlayerColor !== playerColor) {
-    return { valid: false, reason: "Not your turn", code: "WRONG_TURN" }
-  }
-
+  const game = state.game
   // Handle timing for first move
   if (!state.gameStarted || state.moveHistory.length === 0) {
     console.log("FIRST MOVE DETECTED - Starting game timers")
@@ -471,8 +541,6 @@ function validateChessMove(state, move, playerColor, currentTimestamp) {
     state.turnStartTimestamp = currentTimestamp
     state.lastMoveTimestamp = currentTimestamp
   }
-
-  // Time deduction for current player already handled by `updateCrazyhouseTimers` before this.
 
   // Validate and apply the move
   let result
@@ -483,33 +551,41 @@ function validateChessMove(state, move, playerColor, currentTimestamp) {
     return { valid: false, reason: "Invalid move", code: "CHESS_JS_ERROR", details: error.message }
   }
 
-  if (!result) return { valid: false, reason: "Illegal move", code: "ILLEGAL_MOVE" }
+  if (!result) {
+    return { valid: false, reason: "Illegal move", code: "ILLEGAL_MOVE" }
+  }
 
   return {
     valid: true,
     result: result,
     game: game,
-    capturedPiece: result.captured ? { type: result.captured, color: result.color } : null, // Chess.js provides captured piece
-    currentPlayerBeforeMove: currentPlayerBeforeMove,
+    capturedPiece: result.captured ? { type: result.captured, color: result.color } : null,
+    currentPlayerBeforeMove: game.turn() === "w" ? "b" : "w", // Previous player
   }
 }
 
 function updateGameStateAfterMove(state, moveResult, currentTimestamp, isDrop) {
-  const { result, capturedPiece, currentPlayerBeforeMove, game } = moveResult
-
-  // Captured piece handling for Crazyhouse is done in validateAndApplyCrazyhouseMove
-  // for regular moves. For drops, there's no capture.
-
-  // Update state after successful move/drop
+  const { result, game } = moveResult
   const oldFen = state.fen
   state.fen = game.fen()
   state.lastMoveTimestamp = currentTimestamp
 
-  // Add increment to the player who just moved (3+2 time control)
-  if (currentPlayerBeforeMove === "w") {
-    state.whiteTime += state.increment
+  // Calculate elapsed time for the move
+  const previousPlayer = isDrop ? (game.turn() === "w" ? "b" : "w") : moveResult.currentPlayerBeforeMove
+  const turnStart = state.turnStartTimestamp || currentTimestamp
+  const elapsed = Math.max(0, currentTimestamp - turnStart)
+
+  // Deduct elapsed time, then add increment (but not for first move)
+  if (state.gameStarted && state.moveHistory.length > 0) {
+    if (previousPlayer === "w") {
+      state.whiteTime = Math.max(0, state.whiteTime - elapsed + state.increment)
+    } else {
+      state.blackTime = Math.max(0, state.blackTime - elapsed + state.increment)
+    }
   } else {
-    state.blackTime += state.increment
+    // First move: just set gameStarted, don't deduct or increment
+    state.gameStarted = true
+    state.firstMoveTimestamp = currentTimestamp
   }
 
   // Reset turn start timestamp for the NEXT player's turn
@@ -520,13 +596,23 @@ function updateGameStateAfterMove(state, moveResult, currentTimestamp, isDrop) {
   const newActivePlayer = game.turn()
   state.activeColor = newActivePlayer === "w" ? "white" : "black"
 
+  // Pause timers for previous player and resume for new active player
+  const previousColor = previousPlayer === "w" ? "white" : "black"
+  const newColor = newActivePlayer === "w" ? "white" : "black"
+
+  // Pause previous player's timers
+  pauseDropTimer(state, previousColor, currentTimestamp)
+
+  // Resume new player's timers
+  resumeDropTimer(state, newColor, currentTimestamp)
+
   console.log("Move/Drop completed:")
-  console.log("- FEN changed from:", oldFen.split(" ")[0], "to:", state.fen.split(" ")[0])
+  console.log("- FEN changed from:", oldFen, "to:", state.fen)
   console.log("- Next player's turn:", newActivePlayer, "Active color:", state.activeColor)
   console.log("- Final times - White:", state.whiteTime, "Black:", state.blackTime)
 
-  // Update repetition tracking (Crazyhouse repetition includes pocketed pieces)
-  updateRepetitionMap(state, game, true) // true for Crazyhouse FEN
+  // Update repetition tracking (Crazyhouse repetition includes pocket state)
+  updateRepetitionMap(state, game, true)
 }
 
 function finalizeGameEnd(state, gameStatus, currentTimestamp) {
@@ -538,41 +624,14 @@ function finalizeGameEnd(state, gameStatus, currentTimestamp) {
 
 function createMoveResult(state, moveResult, gameStatus) {
   // Derive frozenPieces for the current state
-  const derivedFrozenPieces = {
-    white: [],
-    black: [],
-  }
-
-  // For white
-  if (state.pocketedPieces.white.length > 0) {
-    const firstWhitePiece = state.pocketedPieces.white[0]
-    // If the first piece has an active timer, the rest are frozen
-    if (state.dropTimers.white.has(firstWhitePiece.id)) {
-      derivedFrozenPieces.white = state.pocketedPieces.white.slice(1)
-    } else {
-      // If no timer for the first piece (e.g., it expired or was dropped, and no new timer started yet),
-      // then all pieces in the pocket are considered frozen/unavailable until a new timer starts.
-      derivedFrozenPieces.white = state.pocketedPieces.white
-    }
-  }
-
-  // For black
-  if (state.pocketedPieces.black.length > 0) {
-    const firstBlackPiece = state.pocketedPieces.black[0]
-    if (state.dropTimers.black.has(firstBlackPiece.id)) {
-      derivedFrozenPieces.black = state.pocketedPieces.black.slice(1)
-    } else {
-      derivedFrozenPieces.black = state.pocketedPieces.black
-    }
-  }
-
+  const derivedFrozenPieces = deriveFrozenPieces(state)
   state.gameState = {
     check: moveResult.game.inCheck(),
     checkmate: moveResult.game.isCheckmate(),
     stalemate: moveResult.game.isStalemate(),
     insufficientMaterial: moveResult.game.isInsufficientMaterial(),
-    threefoldRepetition: moveResult.game.isThreefoldRepetition(),
-    fiftyMoveRule: moveResult.game.isDraw(), // Chess.js isDraw includes 50-move rule
+    threefoldRepetition: isThreefoldRepetition(state),
+    fiftyMoveRule: moveResult.game.isDraw(),
     lastMove: moveResult.result,
     result: gameStatus.result,
     winner:
@@ -589,13 +648,11 @@ function createMoveResult(state, moveResult, gameStatus) {
     endTimestamp: state.endTimestamp,
     pocketedPieces: state.pocketedPieces,
     dropTimers: {
-      // Convert Maps to plain objects for easier serialization if needed
       white: Object.fromEntries(state.dropTimers.white),
       black: Object.fromEntries(state.dropTimers.black),
     },
-    frozenPieces: derivedFrozenPieces, // Add derived frozen pieces here
+    frozenPieces: derivedFrozenPieces,
   }
-
   return {
     valid: true,
     move: moveResult.result,
@@ -608,6 +665,40 @@ function createMoveResult(state, moveResult, gameStatus) {
     winner: state.winner,
     ...gameStatus,
   }
+}
+
+// Helper function to derive frozen pieces
+function deriveFrozenPieces(state) {
+  const now = Date.now()
+  const frozenPieces = {
+    white: [],
+    black: [],
+  }
+
+  for (const color of ["white", "black"]) {
+    const pocket = state.pocketedPieces[color]
+    const timers = state.dropTimers[color]
+
+    if (pocket.length > 0) {
+      // First piece with active, non-expired timer is droppable
+      const firstPiece = pocket[0]
+      let timerExpiration = timers.get(firstPiece.id)
+
+      // If timer is not in the active map, check if it's paused on the piece itself
+      if (!timerExpiration && firstPiece.timerPaused && firstPiece.remainingTime !== undefined) {
+        timerExpiration = now + firstPiece.remainingTime // Calculate effective expiration
+      }
+
+      if (!timerExpiration || now >= timerExpiration) {
+        // First piece has no active timer or expired timer - all pieces are frozen
+        frozenPieces[color] = [...pocket]
+      } else {
+        // First piece is droppable - rest are frozen
+        frozenPieces[color] = pocket.slice(1)
+      }
+    }
+  }
+  return frozenPieces
 }
 
 // Get current timer values including drop timers
@@ -628,38 +719,11 @@ export function getCurrentCrazyhouseTimers(state, currentTimestamp) {
       currentTimestamp = Date.now()
     }
 
-    // Re-hydrate Maps if necessary (e.g., state loaded from DB)
-    if (!(state.dropTimers.white instanceof Map)) {
-      state.dropTimers.white = new Map(Object.entries(state.dropTimers.white || {}))
-    }
-    if (!(state.dropTimers.black instanceof Map)) {
-      state.dropTimers.black = new Map(Object.entries(state.dropTimers.black || {}))
-    }
+    // Initialize defaults
+    initializeStateDefaults(state, currentTimestamp)
 
     // If game has ended, return final values
     if (state.gameEnded) {
-      // Derive frozenPieces for the final state
-      const derivedFrozenPieces = {
-        white: [],
-        black: [],
-      }
-      if (state.pocketedPieces.white.length > 0) {
-        const firstWhitePiece = state.pocketedPieces.white[0]
-        if (state.dropTimers.white.has(firstWhitePiece.id)) {
-          derivedFrozenPieces.white = state.pocketedPieces.white.slice(1)
-        } else {
-          derivedFrozenPieces.white = state.pocketedPieces.white
-        }
-      }
-      if (state.pocketedPieces.black.length > 0) {
-        const firstBlackPiece = state.pocketedPieces.black[0]
-        if (state.dropTimers.black.has(firstBlackPiece.id)) {
-          derivedFrozenPieces.black = state.pocketedPieces.black.slice(1)
-        } else {
-          derivedFrozenPieces.black = state.pocketedPieces.black
-        }
-      }
-
       return {
         white: state.whiteTime || 0,
         black: state.blackTime || 0,
@@ -674,18 +738,12 @@ export function getCurrentCrazyhouseTimers(state, currentTimestamp) {
           white: Object.fromEntries(state.dropTimers.white),
           black: Object.fromEntries(state.dropTimers.black),
         },
-        frozenPieces: derivedFrozenPieces, // Add derived frozen pieces here
+        frozenPieces: deriveFrozenPieces(state),
       }
     }
 
     // For first move, don't deduct time
     if (!state.gameStarted || !state.turnStartTimestamp || state.moveHistory.length === 0) {
-      // Derive frozenPieces for the initial/pre-game state (will be empty)
-      const derivedFrozenPieces = {
-        white: [],
-        black: [],
-      }
-
       return {
         white: state.whiteTime || BASE_TIME,
         black: state.blackTime || BASE_TIME,
@@ -696,48 +754,31 @@ export function getCurrentCrazyhouseTimers(state, currentTimestamp) {
           white: Object.fromEntries(state.dropTimers.white),
           black: Object.fromEntries(state.dropTimers.black),
         },
-        frozenPieces: derivedFrozenPieces, // Add derived frozen pieces here
+        frozenPieces: deriveFrozenPieces(state),
       }
     }
 
-    // Temporarily update timers to reflect current time before returning
-    const tempState = JSON.parse(JSON.stringify(state)) // Deep copy to avoid modifying original state for this read operation
-    tempState.dropTimers.white = new Map(Object.entries(state.dropTimers.white))
-    tempState.dropTimers.black = new Map(Object.entries(state.dropTimers.black))
+    // Create temporary state for calculation without modifying original
+    const tempState = {
+      ...state,
+      dropTimers: {
+        white: new Map(state.dropTimers.white),
+        black: new Map(state.dropTimers.black),
+      },
+      pocketedPieces: {
+        white: [...state.pocketedPieces.white],
+        black: [...state.pocketedPieces.black],
+      },
+    }
 
-    updateCrazyhouseTimers(tempState, currentTimestamp) // Use tempState for calculation
+    updateCrazyhouseTimers(tempState, currentTimestamp)
 
     // Check for timeout after temp update
     if (tempState.whiteTime <= 0) {
-      // This means white timed out, black wins
       state.gameEnded = true
       state.endReason = "timeout"
       state.winnerColor = "black"
-      state.winner = null
       state.endTimestamp = currentTimestamp
-
-      // Derive frozenPieces for the timeout state
-      const derivedFrozenPieces = {
-        white: [],
-        black: [],
-      }
-      if (tempState.pocketedPieces.white.length > 0) {
-        const firstWhitePiece = tempState.pocketedPieces.white[0]
-        if (tempState.dropTimers.white.has(firstWhitePiece.id)) {
-          derivedFrozenPieces.white = tempState.pocketedPieces.white.slice(1)
-        } else {
-          derivedFrozenPieces.white = tempState.pocketedPieces.white
-        }
-      }
-      if (tempState.pocketedPieces.black.length > 0) {
-        const firstBlackPiece = tempState.pocketedPieces.black[0]
-        if (tempState.dropTimers.black.has(firstBlackPiece.id)) {
-          derivedFrozenPieces.black = tempState.pocketedPieces.black.slice(1)
-        } else {
-          derivedFrozenPieces.black = tempState.pocketedPieces.black
-        }
-      }
-
       return {
         white: 0,
         black: tempState.blackTime,
@@ -745,48 +786,22 @@ export function getCurrentCrazyhouseTimers(state, currentTimestamp) {
         gameEnded: true,
         endReason: "timeout",
         winnerColor: "black",
-        winner: null,
         shouldNavigateToMenu: true,
         endTimestamp: currentTimestamp,
-        pocketedPieces: state.pocketedPieces,
+        pocketedPieces: tempState.pocketedPieces,
         dropTimers: {
-          white: Object.fromEntries(state.dropTimers.white),
-          black: Object.fromEntries(state.dropTimers.black),
+          white: Object.fromEntries(tempState.dropTimers.white),
+          black: Object.fromEntries(tempState.dropTimers.black),
         },
-        frozenPieces: derivedFrozenPieces, // Add derived frozen pieces here
+        frozenPieces: deriveFrozenPieces(tempState),
       }
     }
 
     if (tempState.blackTime <= 0) {
-      // This means black timed out, white wins
       state.gameEnded = true
       state.endReason = "timeout"
       state.winnerColor = "white"
-      state.winner = null
       state.endTimestamp = currentTimestamp
-
-      // Derive frozenPieces for the timeout state
-      const derivedFrozenPieces = {
-        white: [],
-        black: [],
-      }
-      if (tempState.pocketedPieces.white.length > 0) {
-        const firstWhitePiece = tempState.pocketedPieces.white[0]
-        if (tempState.dropTimers.white.has(firstWhitePiece.id)) {
-          derivedFrozenPieces.white = tempState.pocketedPieces.white.slice(1)
-        } else {
-          derivedFrozenPieces.white = tempState.pocketedPieces.white
-        }
-      }
-      if (tempState.pocketedPieces.black.length > 0) {
-        const firstBlackPiece = tempState.pocketedPieces.black[0]
-        if (tempState.dropTimers.black.has(firstBlackPiece.id)) {
-          derivedFrozenPieces.black = tempState.pocketedPieces.black.slice(1)
-        } else {
-          derivedFrozenPieces.black = tempState.pocketedPieces.black
-        }
-      }
-
       return {
         white: tempState.whiteTime,
         black: 0,
@@ -794,39 +809,14 @@ export function getCurrentCrazyhouseTimers(state, currentTimestamp) {
         gameEnded: true,
         endReason: "timeout",
         winnerColor: "white",
-        winner: null,
         shouldNavigateToMenu: true,
         endTimestamp: currentTimestamp,
-        pocketedPieces: state.pocketedPieces,
+        pocketedPieces: tempState.pocketedPieces,
         dropTimers: {
-          white: Object.fromEntries(state.dropTimers.white),
-          black: Object.fromEntries(state.dropTimers.black),
+          white: Object.fromEntries(tempState.dropTimers.white),
+          black: Object.fromEntries(tempState.dropTimers.black),
         },
-        frozenPieces: derivedFrozenPieces, // Add derived frozen pieces here
-      }
-    }
-
-    console.log("Current Crazyhouse timers:", state.dropTimers)
-
-    // Derive frozenPieces for the current ongoing state
-    const derivedFrozenPieces = {
-      white: [],
-      black: [],
-    }
-    if (tempState.pocketedPieces.white.length > 0) {
-      const firstWhitePiece = tempState.pocketedPieces.white[0]
-      if (tempState.dropTimers.white.has(firstWhitePiece.id)) {
-        derivedFrozenPieces.white = tempState.pocketedPieces.white.slice(1)
-      } else {
-        derivedFrozenPieces.white = tempState.pocketedPieces.white
-      }
-    }
-    if (tempState.pocketedPieces.black.length > 0) {
-      const firstBlackPiece = tempState.pocketedPieces.black[0]
-      if (tempState.dropTimers.black.has(firstBlackPiece.id)) {
-        derivedFrozenPieces.black = tempState.pocketedPieces.black.slice(1)
-      } else {
-        derivedFrozenPieces.black = tempState.pocketedPieces.black
+        frozenPieces: deriveFrozenPieces(tempState),
       }
     }
 
@@ -837,11 +827,10 @@ export function getCurrentCrazyhouseTimers(state, currentTimestamp) {
       gameEnded: false,
       pocketedPieces: tempState.pocketedPieces,
       dropTimers: {
-        // Convert Maps to plain objects for return
         white: Object.fromEntries(tempState.dropTimers.white),
         black: Object.fromEntries(tempState.dropTimers.black),
       },
-      frozenPieces: derivedFrozenPieces, // Add derived frozen pieces here
+      frozenPieces: deriveFrozenPieces(tempState),
     }
   } catch (error) {
     console.error("Error in getCurrentCrazyhouseTimers:", error)
@@ -857,6 +846,8 @@ export function getCurrentCrazyhouseTimers(state, currentTimestamp) {
 
 // Generate legal moves and possible piece drops
 export function getCrazyhouseLegalMoves(fen, pocketedPieces, dropTimers, playerColor) {
+  console.log("=== CRAZYHOUSE LEGAL MOVES GENERATION START ===")
+  console.log("FEN:", pocketedPieces, "Player Color:", playerColor, "Drop Timers:", dropTimers)
   try {
     if (!fen || typeof fen !== "string") {
       console.error("[CRAZYHOUSE_MOVES] Invalid FEN provided:", fen)
@@ -868,52 +859,69 @@ export function getCrazyhouseLegalMoves(fen, pocketedPieces, dropTimers, playerC
     const legalMoves = [...allBoardMoves]
 
     // Add possible piece drops
-    if (pocketedPieces && pocketedPieces[playerColor]) {
+    if (pocketedPieces && pocketedPieces[playerColor] && dropTimers && dropTimers[playerColor]) {
       const currentPlayerPocket = pocketedPieces[playerColor]
-      const currentPlayerDropTimers = new Map(Object.entries(dropTimers[playerColor] || {})) // Ensure Map
+      console.log(currentPlayerPocket)
+      // Use the Map directly, it's already deserialized in gameController.js
+      const currentPlayerDropTimers = dropTimers[playerColor]
       const now = Date.now()
 
-      // In the "withTimer" subvariant, only the first piece in the pocket can be dropped,
-      // and only if its timer hasn't expired.
+      // Only the first piece in the pocket can be dropped, and only if its timer is active and not expired
       if (currentPlayerPocket.length > 0) {
         const firstPieceInPocket = currentPlayerPocket[0]
         const timerKey = firstPieceInPocket.id
-        const expirationTimestamp = currentPlayerDropTimers.get(timerKey)
+        let expirationTimestamp = currentPlayerDropTimers.get(timerKey)
 
-        // Check if the first piece is currently droppable (timer active and not expired)
+        // IMPORTANT: If timer is not in the active map, check if it's paused on the piece itself
+        if (!expirationTimestamp && firstPieceInPocket.timerPaused && firstPieceInPocket.remainingTime !== undefined) {
+          expirationTimestamp = now + firstPieceInPocket.remainingTime // Calculate effective expiration
+        }
+
+        // Check if the first piece is currently droppable
         if (expirationTimestamp && now < expirationTimestamp) {
           const pieceType = firstPieceInPocket.type
+
           for (let row = 0; row < 8; row++) {
             for (let col = 0; col < 8; col++) {
               const square = String.fromCharCode(97 + col) + (row + 1)
-
               // Standard Crazyhouse drop rules
               if (pieceType.toLowerCase() === "p" && (row === 0 || row === 7)) {
                 continue // Pawns cannot be dropped on 1st or 8th rank
               }
-
+              // Check if square is empty
               if (!game.get(square)) {
-                // Square must be empty for a drop
+                // Create a test game to validate the drop doesn't put player in check
+                const testGame = new Chess(game.fen())
                 try {
-                  // Temporarily apply the drop to check legality (e.g., not self-check)
-                  const tempGame = new Chess(fen)
-                  tempGame.put({ type: pieceType, color: playerColor === "white" ? "w" : "b" }, square)
-
-                  // If putting the piece doesn't immediately result in an illegal state for the current player
-                  if (!tempGame.inCheck()) {
-                    legalMoves.push({
-                      from: "pocket", // Special 'from' to denote a drop
-                      to: square,
-                      piece: pieceType,
+                  testGame.put(
+                    {
+                      type: pieceType,
                       color: playerColor === "white" ? "w" : "b",
-                      captured: null,
-                      promotion: null,
-                      san: `${pieceType.toUpperCase()}@${square}`, // Standard Algebraic Notation for drops
-                      flags: "d", // 'd' for drop
-                    })
+                    },
+                    square,
+                  )
+
+                  // Check if this puts the current player in check (illegal)
+                  if (testGame.inCheck() && testGame.turn() === (playerColor === "white" ? "w" : "b")) {
+                    continue // Skip this drop as it would leave king in check
                   }
-                } catch (e) {
-                  // Illegal drop (e.g., trying to put a second king)
+
+                  // Add valid drop move
+                  legalMoves.push({
+                    from: "pocket",
+                    to: square,
+                    piece: pieceType,
+                    drop: true,
+                    san: `${pieceType.toUpperCase()}@${square}`,
+                    color: playerColor === "white" ? "w" : "b",
+                    flags: "d", // drop flag
+                    pieceId: firstPieceInPocket.id,
+                    timeRemaining: expirationTimestamp - now,
+                  })
+                } catch (error) {
+                  // Skip invalid drops
+                  console.warn(`Invalid drop test for ${pieceType} on ${square}:`, error.message)
+                  continue
                 }
               }
             }
@@ -923,124 +931,330 @@ export function getCrazyhouseLegalMoves(fen, pocketedPieces, dropTimers, playerC
     }
     return legalMoves
   } catch (error) {
-    console.error("Error getting crazyhouse legal moves:", error)
+    console.error("Error in getCrazyhouseLegalMoves:", error)
     return []
   }
 }
 
-// Check game status including Crazyhouse specific conditions
-export function checkCrazyhouseGameStatus(state, gameInstance) {
+// Check for game end conditions specific to Crazyhouse
+function checkCrazyhouseGameStatus(state, game) {
   try {
-    if (!state || typeof state !== "object") {
-      console.error("[CRAZYHOUSE_STATUS] Invalid state provided")
-      return { result: "ongoing", error: "Invalid state" }
-    }
-
-    let game = gameInstance
-    if (!game) {
-      if (!state.fen) {
-        console.error("[CRAZYHOUSE_STATUS] Missing FEN in game state")
-        return { result: "ongoing", error: "Missing FEN" }
-      }
-      try {
-        game = new Chess(state.fen)
-      } catch (error) {
-        console.error("[CRAZYHOUSE_STATUS] Error reconstructing game from FEN:", error)
-        return { result: "ongoing", error: "Invalid FEN" }
-      }
-    }
-
-    // Check for time-based wins first
-    if (state.whiteTime <= 0) return { result: "timeout", winnerColor: "black", reason: "white ran out of time" }
-    if (state.blackTime <= 0) return { result: "timeout", winnerColor: "white", reason: "black ran out of time" }
-
-    // Check for checkmate
+    // Standard chess end conditions
     if (game.isCheckmate()) {
-      const winnerColor = game.turn() === "w" ? "black" : "white"
-      console.log(`CHECKMATE DETECTED: ${winnerColor} wins!`)
-      return { result: "checkmate", winnerColor: winnerColor }
+      const winner = game.turn() === "w" ? "black" : "white"
+      return {
+        result: "checkmate",
+        winnerColor: winner,
+        reason: "Checkmate",
+      }
     }
-
-    // Check for other draw conditions
-    if (game.isStalemate()) return { result: "draw", reason: "stalemate", winnerColor: null }
-    if (game.isInsufficientMaterial()) return { result: "draw", reason: "insufficient material", winnerColor: null }
-
-    // Chess.js's isThreefoldRepetition relies on standard FEN, which doesn't include pocket.
-    // We need a custom check for Crazyhouse, which updateRepetitionMap helps with.
-    // If the FEN+pocket has appeared 3 times, it's a draw.
-    if (!(state.repetitionMap instanceof Map)) {
-      state.repetitionMap = new Map(Object.entries(state.repetitionMap || {}))
+    if (game.isStalemate()) {
+      return {
+        result: "draw",
+        reason: "Stalemate",
+      }
     }
-    const crazyhouseFen = getCrazyhouseFenForRepetition(game.fen(), state.pocketedPieces)
-    const repetitionCount = state.repetitionMap.get(crazyhouseFen) || 0
-    if (repetitionCount >= 3) return { result: "draw", reason: "threefold repetition (crazyhouse)", winnerColor: null }
-
-    // Check 50-move rule: Crazyhouse has no 50-move rule usually because drops reset it.
-    // However, if Chess.js `isDraw()` handles it, we can keep it for general draws.
-    // If we want to strictly follow Crazyhouse rules, this should be modified.
-    // For now, let's keep it as Chess.js `isDraw` handles standard rules.
-    if (game.isDraw()) return { result: "draw", reason: "50-move rule", winnerColor: null }
-
-    // Crazyhouse typically has a 75-move rule.
-    if (state.moveHistory && state.moveHistory.length >= 150)
-      // 150 half-moves = 75 full moves
-      return { result: "draw", reason: "75-move rule", winnerColor: null }
-
-    return { result: "ongoing", winnerColor: null }
+    if (game.isInsufficientMaterial()) {
+      return {
+        result: "draw",
+        reason: "Insufficient material",
+      }
+    }
+    // Check for threefold repetition (including pocket state)
+    if (isThreefoldRepetition(state)) {
+      return {
+        result: "draw",
+        reason: "Threefold repetition",
+      }
+    }
+    // 50-move rule (but note: in Crazyhouse, captures reset this counter)
+    if (game.isDraw()) {
+      return {
+        result: "draw",
+        reason: "50-move rule",
+      }
+    }
+    // Game is ongoing
+    return {
+      result: "ongoing",
+    }
   } catch (error) {
-    console.error("Error checking crazyhouse game status:", error)
-    return { result: "ongoing", error: error.message, winnerColor: null }
+    console.error("Error checking game status:", error)
+    return {
+      result: "ongoing",
+    }
   }
 }
 
-// Helper: track FEN repetitions for Crazyhouse (includes pocketed pieces)
-export function updateRepetitionMap(state, gameInstance, isCrazyhouse = false) {
+// Update repetition map for threefold repetition detection
+function updateRepetitionMap(state, game, includePockets = true) {
   try {
-    if (!state || typeof state !== "object") {
-      console.error("[REPETITION] Invalid state provided")
-      return
+    let positionKey = game.fen()
+
+    if (includePockets) {
+      // Include pocket state in position key for Crazyhouse
+      const pocketString = JSON.stringify({
+        white: state.pocketedPieces.white.map((p) => p.type).sort(),
+        black: state.pocketedPieces.black.map((p) => p.type).sort(),
+      })
+      positionKey += `_${pocketString}`
     }
 
-    let fen
-    if (gameInstance) {
-      fen = gameInstance.fen()
-    } else if (state.fen) {
-      fen = state.fen
-    } else {
-      console.error("[REPETITION] Missing FEN in game state")
-      return
-    }
+    const currentCount = state.repetitionMap.get(positionKey) || 0
+    state.repetitionMap.set(positionKey, currentCount + 1)
 
-    if (!fen || typeof fen !== "string") {
-      console.error("[REPETITION] Invalid FEN format:", fen)
-      return
-    }
-
-    // For Crazyhouse, repetition must include the pocketed pieces state
-    let repetitionFen = fen
-    if (isCrazyhouse && state.pocketedPieces) {
-      repetitionFen += `[${state.pocketedPieces.white.map((p) => p.type).join("")}]`
-      repetitionFen += `[${state.pocketedPieces.black.map((p) => p.type).join("")}]`
-    }
-
-    if (!(state.repetitionMap instanceof Map)) {
-      state.repetitionMap = new Map(Object.entries(state.repetitionMap || {}))
-    }
-
-    const current = state.repetitionMap.get(repetitionFen) || 0
-    state.repetitionMap.set(repetitionFen, current + 1)
-    console.log("Repetition map updated for Crazyhouse FEN:", repetitionFen, "Count:", current + 1)
+    console.log(`Position repetition count: ${currentCount + 1} for key: ${positionKey}`)
   } catch (error) {
     console.error("Error updating repetition map:", error)
   }
 }
 
-// Helper: Generate a Crazyhouse FEN string for repetition checking
-function getCrazyhouseFenForRepetition(fen, pocketedPieces) {
-  let crazyhouseFen = fen.split(" ")[0] // Only the board position
-  // For sequential pocket, join types in order
-  const whitePocket = pocketedPieces.white.map((p) => p.type).join("")
-  const blackPocket = pocketedPieces.black.map((p) => p.type).join("")
-  crazyhouseFen += `[${whitePocket}][${blackPocket}]`
-  return crazyhouseFen
+// Check for threefold repetition
+function isThreefoldRepetition(state) {
+  try {
+    if (!state.repetitionMap || state.repetitionMap.size === 0) {
+      return false
+    }
+
+    for (const [position, count] of state.repetitionMap.entries()) {
+      if (count >= 3) {
+        console.log(`Threefold repetition detected for position: ${position}`)
+        return true
+      }
+    }
+    return false
+  } catch (error) {
+    console.error("Error checking threefold repetition:", error)
+    return false
+  }
+}
+
+// Get available pieces for dropping (only the first piece in queue if timer is active)
+export function getAvailableDropPieces(state, playerColor, currentTimestamp) {
+  try {
+    if (!currentTimestamp) {
+      currentTimestamp = Date.now()
+    }
+    if (!state.pocketedPieces || !state.pocketedPieces[playerColor]) {
+      return []
+    }
+
+    const pocket = state.pocketedPieces[playerColor]
+    const timers = state.dropTimers[playerColor]
+
+    if (pocket.length === 0) {
+      return []
+    }
+
+    // Only first piece can be dropped in sequential system
+    const firstPiece = pocket[0]
+    const timerKey = firstPiece.id
+    let expirationTimestamp = timers.get(timerKey)
+
+    // IMPORTANT: If timer is not in the active map, check if it's paused on the piece itself
+    if (!expirationTimestamp && firstPiece.timerPaused && firstPiece.remainingTime !== undefined) {
+      expirationTimestamp = currentTimestamp + firstPiece.remainingTime // Calculate effective expiration
+    }
+
+    // Check if piece has active, non-expired timer
+    if (expirationTimestamp && currentTimestamp < expirationTimestamp) {
+      return [
+        {
+          ...firstPiece,
+          timeRemaining: expirationTimestamp - currentTimestamp,
+          canDrop: true,
+        },
+      ]
+    }
+
+    return [] // No pieces available for drop
+  } catch (error) {
+    console.error("Error getting available drop pieces:", error)
+    return []
+  }
+}
+
+// Get all pieces in pocket with their drop status
+export function getPocketStatus(state, playerColor, currentTimestamp) {
+  try {
+    if (!currentTimestamp) {
+      currentTimestamp = Date.now()
+    }
+    if (!state.pocketedPieces || !state.pocketedPieces[playerColor]) {
+      return {
+        pieces: [],
+        droppable: [],
+        frozen: [],
+      }
+    }
+
+    const pocket = state.pocketedPieces[playerColor]
+    const timers = state.dropTimers[playerColor]
+
+    if (pocket.length === 0) {
+      return {
+        pieces: [],
+        droppable: [],
+        frozen: [],
+      }
+    }
+
+    const pieces = pocket.map((piece, index) => {
+      const timerKey = piece.id
+      let expirationTimestamp = timers.get(timerKey)
+
+      // IMPORTANT: If timer is not in the active map, check if it's paused on the piece itself
+      if (!expirationTimestamp && piece.timerPaused && piece.remainingTime !== undefined) {
+        expirationTimestamp = currentTimestamp + piece.remainingTime // Calculate effective expiration
+      }
+
+      const timeRemaining = expirationTimestamp ? Math.max(0, expirationTimestamp - currentTimestamp) : 0
+
+      return {
+        ...piece,
+        index,
+        hasTimer: !!expirationTimestamp,
+        timeRemaining,
+        expired: expirationTimestamp ? currentTimestamp >= expirationTimestamp : false,
+        canDrop: index === 0 && expirationTimestamp && currentTimestamp < expirationTimestamp,
+      }
+    })
+
+    const droppable = pieces.filter((p) => p.canDrop)
+    const frozen = pieces.filter((p) => !p.canDrop)
+
+    return {
+      pieces,
+      droppable,
+      frozen,
+    }
+  } catch (error) {
+    console.error("Error getting pocket status:", error)
+    return {
+      pieces: [],
+      droppable: [],
+      frozen: [],
+    }
+  }
+}
+
+// Force expire pieces that have exceeded their drop time limit
+export function expireDropPieces(state, currentTimestamp) {
+  try {
+    if (!currentTimestamp) {
+      currentTimestamp = Date.now()
+    }
+    let expiredCount = 0
+    for (const color of ["white", "black"]) {
+      const pocket = state.pocketedPieces[color]
+      const timers = state.dropTimers[color]
+
+      if (pocket.length === 0) continue
+
+      // Find and remove all expired pieces
+      const expiredIndices = []
+
+      for (let i = 0; i < pocket.length; i++) {
+        const piece = pocket[i]
+        let expirationTimestamp = timers.get(piece.id)
+
+        // IMPORTANT: If timer is not in the active map, check if it's paused on the piece itself
+        if (!expirationTimestamp && piece.timerPaused && piece.remainingTime !== undefined) {
+          expirationTimestamp = currentTimestamp + piece.remainingTime // Calculate effective expiration
+        }
+
+        if (expirationTimestamp && currentTimestamp >= expirationTimestamp) {
+          expiredIndices.push(i)
+        }
+      }
+
+      // Remove expired pieces (in reverse order to maintain indices)
+      for (let j = expiredIndices.length - 1; j >= 0; j--) {
+        const index = expiredIndices[j]
+        const piece = pocket[index]
+        pocket.splice(index, 1)
+        timers.delete(piece.id)
+        delete piece.timerPaused // Clean up paused flag
+        delete piece.remainingTime // Clean up remaining time
+        expiredCount++
+        console.log(`Force expired ${piece.type} from ${color}'s pocket`)
+      }
+
+      // Start timer for new first piece if pocket is not empty
+      if (pocket.length > 0) {
+        const firstPiece = pocket[0]
+        if (!timers.has(firstPiece.id)) {
+          timers.set(firstPiece.id, currentTimestamp + DROP_TIME_LIMIT)
+          console.log(`Started timer for new first piece ${firstPiece.type} in ${color}'s pocket`)
+        }
+      }
+    }
+    return expiredCount
+  } catch (error) {
+    console.error("Error expiring drop pieces:", error)
+    return 0
+  }
+}
+
+// Serialize state for storage (convert Maps to objects)
+export function serializeCrazyhouseState(state) {
+  try {
+    return {
+      ...state,
+      dropTimers: {
+        white: Object.fromEntries(state.dropTimers.white),
+        black: Object.fromEntries(state.dropTimers.black),
+      },
+      repetitionMap: Object.fromEntries(state.repetitionMap),
+    }
+  } catch (error) {
+    console.error("Error serializing state:", error)
+    return state
+  }
+}
+
+// Deserialize state from storage (convert objects back to Maps)
+export function deserializeCrazyhouseState(serializedState) {
+  try {
+    return {
+      ...serializedState,
+      dropTimers: {
+        white: new Map(Object.entries(serializedState.dropTimers?.white || {})),
+        black: new Map(Object.entries(serializedState.dropTimers?.black || {})),
+      },
+      repetitionMap: new Map(Object.entries(serializedState.repetitionMap || {})),
+    }
+  } catch (error) {
+    console.error("Error deserializing state:", error)
+    return serializedState
+  }
+}
+
+// Pause the drop timer for the current piece in the pocket (if any)
+export function pauseDropTimer(state, color, currentTimestamp) {
+  const pocket = state.pocketedPieces[color]
+  const timers = state.dropTimers[color]
+  if (pocket.length === 0) return
+  const firstPiece = pocket[0]
+  const timerKey = firstPiece.id
+  const expirationTimestamp = timers.get(timerKey)
+  if (expirationTimestamp) {
+    // Store remaining time on the piece
+    firstPiece.remainingTime = Math.max(0, expirationTimestamp - currentTimestamp)
+    timers.delete(timerKey)
+    firstPiece.timerPaused = true
+  }
+}
+
+export function resumeDropTimer(state, color, currentTimestamp) {
+  const pocket = state.pocketedPieces[color]
+  const timers = state.dropTimers[color]
+  if (pocket.length === 0) return
+  const firstPiece = pocket[0]
+  const timerKey = firstPiece.id
+  if (firstPiece.timerPaused && firstPiece.remainingTime > 0) {
+    timers.set(timerKey, currentTimestamp + firstPiece.remainingTime)
+    delete firstPiece.timerPaused
+    delete firstPiece.remainingTime
+  }
 }
