@@ -315,29 +315,33 @@ function handleDecayMove(state, move, playerColor, currentTimestamp) {
       )
     }
   }
-  // Handle major piece moves - CORE REQUIREMENT
+  // Handle major piece moves - FIXED VERSION
   else if (isMajorPiece(pieceType)) {
     const queenTimer = state.queenDecayTimers[color]
     const majorTimer = state.majorPieceDecayTimers[color]
 
     if (queenTimer.frozen && !majorTimer.active && !majorTimer.frozen) {
+      // Start decay timer for the FIRST major piece moved after queen freezes
       majorTimer.active = true
       majorTimer.timeRemaining = MAJOR_PIECE_INITIAL_DECAY_TIME
       majorTimer.moveCount = 1
       majorTimer.pieceType = pieceType
       majorTimer.square = move.to
-      console.log(`${color} ${pieceType} decay timer started: 20 seconds (queen is frozen)`)
-    } else if (majorTimer.active && !majorTimer.frozen && majorTimer.square === move.from) {
-      // Only increment by 2 seconds per move, never above 20s
-      majorTimer.moveCount++
-      majorTimer.timeRemaining = Math.min(
-        majorTimer.timeRemaining + DECAY_TIME_INCREMENT, // always +2s
-        MAJOR_PIECE_INITIAL_DECAY_TIME
-      )
-      majorTimer.square = move.to
-      console.log(
-        `${color} ${pieceType} move #${majorTimer.moveCount}: +2 seconds added, total: ${majorTimer.timeRemaining}ms (max 20000ms)`
-      )
+      console.log(`${color} ${pieceType} decay timer started: 20 seconds (first major piece after queen frozen)`)
+    } else if (majorTimer.active && !majorTimer.frozen) {
+      // Only allow moves of the SAME major piece that started decaying
+      if (majorTimer.square === move.from && majorTimer.pieceType === pieceType) {
+        // Update timer for the tracked major piece
+        majorTimer.moveCount++
+        majorTimer.timeRemaining = Math.min(
+          majorTimer.timeRemaining + DECAY_TIME_INCREMENT,
+          MAJOR_PIECE_INITIAL_DECAY_TIME
+        )
+        majorTimer.square = move.to
+        console.log(
+          `${color} ${pieceType} move #${majorTimer.moveCount}: +2 seconds added, total: ${majorTimer.timeRemaining}ms`
+        )
+      }
     }
   }
 }

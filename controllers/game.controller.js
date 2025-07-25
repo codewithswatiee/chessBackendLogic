@@ -215,9 +215,18 @@ export async function makeMove({ sessionId, userId, move, timestamp, variant, su
 
   // For SixPointer, reset timers after a valid move
   if (variant === "sixpointer") {
-    resetSixPointerTimer(gameState)
-    gameState.board.whiteTime = 30000
-    gameState.board.blackTime = 30000
+    const activeColor = gameState.board.activeColor
+    const opponentColor = activeColor === "white" ? "black" : "white"
+    
+    // Reset timer for next player (opponent) to 30 seconds
+    gameState.board.timers[opponentColor].remaining = 30000
+    gameState.board.timers[opponentColor].lastUpdateTime = now
+    gameState.board[`${opponentColor}Time`] = 30000
+    
+    // Ensure current player's timer is properly tracked
+    gameState.board.timers[activeColor].lastUpdateTime = now
+    
+    console.log(`Resetting timer for ${opponentColor} to 30 seconds`)
   } else if (variant === "classic" && subvariant === "blitz") {
     const activeColor = gameState.board.activeColor
     gameState.board[`${activeColor}Time`] += 2000
