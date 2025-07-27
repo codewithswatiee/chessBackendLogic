@@ -173,7 +173,7 @@ function parseFen(fen) {
 /**
  * Create initial game state with comprehensive chess rules
  */
-function createInitialGameState(variant, subvariant, whitePlayer, blackPlayer, type) {
+function createInitialGameState(variant, subvariant, whitePlayer, blackPlayer) {
   const gameConfig = GAME_VARIANTS[variant].subvariants
     ? GAME_VARIANTS[variant].subvariants[subvariant]
     : GAME_VARIANTS[variant];
@@ -250,7 +250,7 @@ function createInitialGameState(variant, subvariant, whitePlayer, blackPlayer, t
       endedAt: null,
       rules: getChessRules(variant, subvariant),
       metadata: {
-        source: type,
+        source: null, // Don't set a default, let it be set by createGameSession
         rated: true,
         spectators: [],
         allowSpectators: true,
@@ -1020,157 +1020,172 @@ function initializeTimers(gameState) {
   };
 }
 
-export async function createGameSession(player1, player2, variant, subvariant, type, customConfig = {}) {
-  try {
-    // Input validation
-    console.log('Creating game session with players:', player1, player2);
-    console.log('Variant:', variant, 'Subvariant:', subvariant);
-    if (!validatePlayer(player1) || !validatePlayer(player2)) {
-      throw new Error('Invalid player data provided');
-    }
-    
-    if (player1.userId === player2.userId) {
-      throw new Error('Cannot create game session with the same player');
-    }
-    
-    if (!validateGameConfig(variant, subvariant)) {
-      throw new Error(`Invalid game variant: ${variant}/${subvariant}`);
-    }
-    
-    // Check if either player is already in an active session
-    // const [player1Session, player2Session] = await Promise.all([
-    //   redisClient.get(userSessionKey(player1.userId)),
-    //   redisClient.get(userSessionKey(player2.userId))
-    // ]);
-    
-    // if (player1Session) {
-    //   throw new Error(`Player ${player1.username} is already in an active game`);
-    // }
-    
-    // if (player2Session) {
-    //   throw new Error(`Player ${player2.username} is already in an active game`);
-    // }
-    
-    // Generate session ID
-    const sessionId = uuidv4();
-    
-    // Assign colors randomly
-    const { whitePlayer, blackPlayer } = assignPlayerColors(player1, player2);
-    
-    // Create initial game state
-    const gameState = createInitialGameState(variant, subvariant, whitePlayer, blackPlayer, type);
-    gameState.sessionId = sessionId;
-    
-    // Apply any custom configurations
-    if (customConfig.timeControl) {
-      gameState.timeControl = { ...gameState.timeControl, ...customConfig.timeControl };
-    }
-    
-    if (customConfig.rated !== undefined) {
-      gameState.metadata.rated = customConfig.rated;
-    }
-    
-    if (customConfig.allowSpectators !== undefined) {
-      gameState.metadata.allowSpectators = customConfig.allowSpectators;
-    }
-    
-    // Initialize timers
-    const timers = initializeTimers(gameState);
-    gameState.timers = timers;
-    
-    // Prepare session data for Redis
-    const sessionData = {
-      sessionId,
-      gameState: JSON.stringify(convertBigIntToNumber(gameState)),
-      playerWhiteId: whitePlayer.userId,
-      playerBlackId: blackPlayer.userId,
-      variant,
-      subvariant,
-      status: 'active',
-      createdAt: Date.now().toString(),
-      lastActivity: Date.now().toString(),
-      timeControl: JSON.stringify(convertBigIntToNumber(gameState.timeControl))
-    };
-    
-    // Store in Redis using transaction for atomicity
-    const multi = redisClient.multi();
-    
-    // Store session data
-    multi.hSet(sessionKey(sessionId), sessionData);
-    multi.expire(sessionKey(sessionId), Math.floor(SESSION_TIMEOUT / 1000));
-    
-    // Map users to session
-    multi.set(userSessionKey(whitePlayer.userId), sessionId);
-    multi.set(userSessionKey(blackPlayer.userId), sessionId);
-    multi.expire(userSessionKey(whitePlayer.userId), Math.floor(SESSION_TIMEOUT / 1000));
-    multi.expire(userSessionKey(blackPlayer.userId), Math.floor(SESSION_TIMEOUT / 1000));
-    
-    // Execute transaction
-    await multi.exec();
-    
-    // Log session creation
-    console.log(`Game session created: ${sessionId}`, {
-      white: whitePlayer.username,
-      black: blackPlayer.username,
-      variant: `${variant}/${subvariant}`,
-      timeControl: `${gameState.timeControl.baseTime/60000}+${gameState.timeControl.increment/1000}`
-    });
+export async function createGameSession(player1, player2, variant, subvariant, source, customConfig = {}) {
+    try {
+        // Input validation
+        console.log('Creating game session with players:', player1, player2);
+        console.log('Variant:', variant, 'Subvariant:', subvariant);
+        if (!validatePlayer(player1) || !validatePlayer(player2)) {
+          throw new Error('Invalid player data provided');
+        }
+        
+        if (player1.userId === player2.userId) {
+          throw new Error('Cannot create game session with the same player');
+        }
+        
+        if (!validateGameConfig(variant, subvariant)) {
+          throw new Error(`Invalid game variant: ${variant}/${subvariant}`);
+        }
+        
+        // Check if either player is already in an active session
+        // const [player1Session, player2Session] = await Promise.all([
+        //   redisClient.get(userSessionKey(player1.userId)),
+        //   redisClient.get(userSessionKey(player2.userId))
+        // ]);
+        
+        // if (player1Session) {
+        //   throw new Error(`Player ${player1.username} is already in an active game`);
+        // }
+        
+        // if (player2Session) {
+        //   throw new Error(`Player ${player2.username} is already in an active game`);
+        // }
+        
+        // Generate session ID
+        const sessionId = uuidv4();
+        
+        // Assign colors randomly
+        const { whitePlayer, blackPlayer } = assignPlayerColors(player1, player2);
+        
+        // Create initial game state
+        const gameState = createInitialGameState(variant, subvariant, whitePlayer, blackPlayer);
+        gameState.sessionId = sessionId;
 
-    try{
-        if(type === 'battle'){
-          const gameData = new gameModel({
-            variant,
-            sessionId,
-            subvariant,
-            state: gameState.board,
-            players: {
-                white: player1.userId,
-                black: player2.userId
-            }
-          })
+        // Handle mixed sources - source parameter will be an object with player sources
+        gameState.metadata.source = {
+            [whitePlayer.userId]: source[whitePlayer.userId] || 'matchmaking',
+            [blackPlayer.userId]: source[blackPlayer.userId] || 'matchmaking'
+        };
 
-          await gameData.save();
-        } else if(type === 'tournament'){
-          const tournamentData = new tournamentModel({
-            variant,
-            sessionId,
-            subvariant,
-            matches: [
-              {
-                sessionId,
-                player1: player1.userId,
-                player2: player2.userId,
-                result: 'ongoing',
-                gameState: gameState.board
+        // Apply any custom configurations
+        if (customConfig.timeControl) {
+          gameState.timeControl = { ...gameState.timeControl, ...customConfig.timeControl };
+        }
+        
+        if (customConfig.rated !== undefined) {
+          gameState.metadata.rated = customConfig.rated;
+        }
+        
+        if (customConfig.allowSpectators !== undefined) {
+          gameState.metadata.allowSpectators = customConfig.allowSpectators;
+        }
+        
+        // Initialize timers
+        const timers = initializeTimers(gameState);
+        gameState.timers = timers;
+        
+        // Prepare session data for Redis
+        const sessionData = {
+          sessionId,
+          gameState: JSON.stringify(convertBigIntToNumber(gameState)),
+          playerWhiteId: whitePlayer.userId,
+          playerBlackId: blackPlayer.userId,
+          variant,
+          subvariant,
+          status: 'active',
+          createdAt: Date.now().toString(),
+          lastActivity: Date.now().toString(),
+          timeControl: JSON.stringify(convertBigIntToNumber(gameState.timeControl))
+        };
+        
+        // Store in Redis using transaction for atomicity
+        const multi = redisClient.multi();
+        
+        // Store session data
+        multi.hSet(sessionKey(sessionId), sessionData);
+        multi.expire(sessionKey(sessionId), Math.floor(SESSION_TIMEOUT / 1000));
+        
+        // Map users to session
+        multi.set(userSessionKey(whitePlayer.userId), sessionId);
+        multi.set(userSessionKey(blackPlayer.userId), sessionId);
+        multi.expire(userSessionKey(whitePlayer.userId), Math.floor(SESSION_TIMEOUT / 1000));
+        multi.expire(userSessionKey(blackPlayer.userId), Math.floor(SESSION_TIMEOUT / 1000));
+        
+        // Execute transaction
+        await multi.exec();
+        
+        // Log session creation
+        console.log(`Game session created: ${sessionId}`, {
+          white: whitePlayer.username,
+          black: blackPlayer.username,
+          variant: `${variant}/${subvariant}`,
+          timeControl: `${gameState.timeControl.baseTime/60000}+${gameState.timeControl.increment/1000}`
+        });
+
+        console.log(source, 'source for game session creation:', sessionId);
+        try{
+            // Always save the game in gameModel
+            const gameData = new gameModel({
+              variant,
+              sessionId,
+              subvariant,
+              state: gameState.board,
+              players: {
+                  white: whitePlayer.userId,
+                  black: blackPlayer.userId
               }
-            ]
-          })
+            });
+            await gameData.save();
 
-          await tournamentData.save();
+            // If either player is from tournament, save in tournament collection
+            if (source[whitePlayer.userId] === 'tournament' || source[blackPlayer.userId] === 'tournament') {
+                const tournamentData = await tournamentModel.findOne({
+                    status: 'active'
+                });
+
+                if (tournamentData) {
+                    await tournamentModel.findByIdAndUpdate(
+                        tournamentData._id,
+                        {
+                            $push: {
+                                matches: {
+                                    sessionId,
+                                    player1: whitePlayer.userId,
+                                    player2: blackPlayer.userId,
+                                    result: 'ongoing',
+                                    gameState: gameState.board
+                                }
+                            }
+                        }
+                    );
+                }
+            }
+
+            console.log(`Game session created with ID: ${sessionId} & saved to database.`);
+        } catch(err) {
+            return {
+                success: false,
+                message: `Failed to save game session to database: ${err.message}`
+            };
         }
-        console.log(`Game session created with ID: ${sessionId} & saved to database.`);
-    } catch(err){
-        player1Socket.emit('queue:error', { message: 'Failed to Create game.' });
-        player2Socket.emit('queue:error', { message: 'Failed to Create game.' });
+
+        // Return session data for frontend
+        return {
+          success: true,
+          sessionId,
+          gameState: {
+            ...gameState,
+            userColor: {
+              [whitePlayer.userId]: 'white',
+              [blackPlayer.userId]: 'black'
+            }
+          }
+        };
+        
+    } catch (error) {
+        console.error('Error creating game session:', error);
+        throw new Error(`Failed to create game session: ${error.message}`);
     }
-    
-    // Return session data for frontend
-    return {
-      success: true,
-      sessionId,
-      gameState: {
-        ...gameState,
-        userColor: {
-          [whitePlayer.userId]: 'white',
-          [blackPlayer.userId]: 'black'
-        }
-      }
-    };
-    
-  } catch (error) {
-    console.error('Error creating game session:', error);
-    throw new Error(`Failed to create game session: ${error.message}`);
-  }
 }
 
 /**

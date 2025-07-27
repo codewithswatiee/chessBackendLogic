@@ -12,7 +12,7 @@ import {
   cleanupIdleUsers,
   handleDisconnect,
 } from "../controllers/matchmaking.controller.js";
-import { createTournament, getActiveTournamentDetails, joinTournament, leaveTournament } from "../controllers/tournament.controller.js";
+import { createTournament, getActiveTournamentDetails, handleTournamentMatchResult, joinTournament, leaveTournament } from "../controllers/tournament.controller.js";
 import tournamentModel from "../models/tournament.model.js";
 import UserModel from "../models/User.model.js";
 
@@ -52,6 +52,7 @@ const websocketRoutes = (io) => {
                     variant,
                     io: matchmakingNamespace, // Pass the namespace for emitting events
                     subvariant,
+                    source: 'matchmaking'
                 });
 
                 console.log(`User ${userId} successfully joined the regular queue`);
@@ -85,6 +86,7 @@ const websocketRoutes = (io) => {
                     userId,
                     socketId: socket.id,
                     io: matchmakingNamespace, // Pass the namespace
+                    source: 'tournament'
                 });
                 console.log(`User ${userId} successfully joined the tournament`);
             } catch (err) {
@@ -130,24 +132,41 @@ const websocketRoutes = (io) => {
             }
         });
 
-        // Event for creating tournaments (typically an admin-only action)
-        socket.on("tournament:create", async ({ name, capacity, startTime, duration, entryFee, prizePool }) => {
-            // Implement authorization check here (e.g., if user is admin)
-            if (userId !== 'ADMIN_USER_ID') { // Replace with actual admin check
-                socket.emit('tournament:error', { message: 'Unauthorized: Only admins can create tournaments.' });
-                return;
-            }
-            try {
-                const tournamentId = await createTournament({ name, capacity, startTime, duration, entryFee, prizePool });
-                // Emit to all connected clients in the namespace to notify about new tournament
-                matchmakingNamespace.emit('tournament:new_active', { tournamentId, name, message: 'A new tournament has been created!' });
-                socket.emit('tournament:created', { tournamentId, message: 'Tournament created successfully.' });
-                console.log(`Admin ${userId} created tournament ${tournamentId}`);
-            } catch (error) {
-                console.error('Error creating tournament:', error);
-                socket.emit('tournament:error', { message: 'Failed to create tournament.' });
-            }
-        });
+//         // Event for creating tournaments (typically an admin-only action)
+//         socket.on("tournament:create", async ({ name }) => {
+//             if (userId !== 'ADMIN_USER_ID') {
+//                 socket.emit('tournament:error', { message: 'Unauthorized: Only admins can create tournaments.' });
+//                 return;
+//             }
+//             try {
+//                 // Set tournament times for today
+//                 const now = new Date();
+//                 const startTime = new Date(now.setHours(9, 0, 0, 0));
+//                 const endTime = new Date(now.setHours(21, 0, 0, 0));
+//                 
+//                 const tournamentId = await createTournament({ 
+//                     name, 
+//                     capacity: 200,
+//                     startTime,
+//                     endTime
+//                 });
+//                 
+//                 matchmakingNamespace.emit('tournament:new_active', { 
+//                     tournamentId, 
+//                     name, 
+//                     message: 'A new tournament has been created!' 
+//                 });
+//                 
+//                 socket.emit('tournament:created', { 
+//                     tournamentId, 
+//                     message: 'Tournament created successfully.' 
+//                 });
+//                 
+//             } catch (error) {
+//                 console.error('Error creating tournament:', error);
+//                 socket.emit('tournament:error', { message: 'Failed to create tournament.' });
+//             }
+//         });
 
 
         // --- Disconnect Handling ---
@@ -181,11 +200,11 @@ const websocketRoutes = (io) => {
   gameNamespace.on("connection", (socket) => {
     const queryParams = socket.handshake.auth;
     console.log("queryParams:", queryParams);
-    const {userId, sessionId, variant, subvariant} = queryParams;
-    console.log("User connected to game socket:", socket.id, "UserId:", userId, "SessionId:", sessionId);
+    const {userId, sessionId, variant, subvariant, source} = queryParams; // Add source to destructuring
+    console.log("User connected to game socket:", socket.id, "UserId:", userId, "SessionId:", sessionId, "Source:", source);
 
-    if (!userId || !sessionId) {
-      console.error("UserId/sessionId not provided in handshake auth");
+    if (!userId || !sessionId || !source) { // Add source check
+      console.error("UserId/sessionId/source not provided in handshake auth");
       socket.disconnect(true);
       return;
     }
@@ -197,7 +216,15 @@ const websocketRoutes = (io) => {
     // Make move
     socket.on("game:makeMove", async ({ move, timestamp }) => {
       try {
-        const result = await makeMove({ sessionId, userId, move, timestamp, variant, subvariant });
+        const result = await makeMove({ 
+        sessionId, 
+        userId, 
+        move, 
+        timestamp, 
+        variant, 
+        subvariant,
+        source
+        });
         if (result && result.type === 'game:warning') {
           console.warn("Game warning:", result.message);
           gameNamespace.to(sessionId).emit("game:warning", { message: result.message, move: result.move, gameState: result.gameState });
@@ -218,68 +245,9 @@ const websocketRoutes = (io) => {
         // --- MODIFICATION END ---
 
         if (gameState.status === 'finished') {
-         if(gameState.metadata.source === 'tournament'){
-                        const updatedTournament = await tournamentModel.findOneAndUpdate({'matches.sessionId': sessionId}, {
-                                $set: {
-                                        'matches.$.result': gameState.result,
-                                        'matches.$.gameState': gameState.board
-                                        }
-                                }, { new: true });
-                        if(updatedTournament){
-                                console.log(`Tournament match updated for session ${sessionId} with result ${gameState.result}`);
-                                const winnerId = gameState.result === 'white' ? updatedTournament.player1 : updatedTournament.player2;
-                                const updatedUserPoints = await UserModel.findByIdAndUpdate({winnerId}, {
-                                        // will continue to update points based on your logic
-                                })
-                        }
-                } else if(gameState.metadata.source === 'matchmaking') {
-                        let incPoint = 0;
-                        if(variant === 'classic') {
-                                incPoint = 1
-                        } else if(variant === 'crazyhouse') {
-                                incPoint = 2
-                        } else if(variant === 'sixpointer') {
-                                incPoint = 3
-                        } else if(variant === 'decay') {
-                                incPoint = 3
-                        }
-                        const winnerId = gameState.winnerColor === 'white' ? gameState.players.white.userId : gameState.players.black.userId;
-                        const looserId = gameState.winnerColor === 'white' ? gameState.players.black.userId : gameState.players.white.userId;
-                        const updateWinner = await UserModel.findByIdAndUpdate(
-                                winnerId,
-                                {
-                                        $inc: {
-                                        ratings: incPoint,
-                                        win: 1,
-                                },
-                                },
-                        { new: true } 
-                        );
-
-
-                        if(!updateWinner) {
-                                console.error(`Failed to update user points for winner ${winnerId}`);
-                                gameNamespace.to(sessionId).emit("game:error", { message: "Failed to update user points." });
-                        }
-
-                        const updateLooser = await UserModel.findByIdAndUpdate(
-                                looserId,
-                                {
-                                        $inc: {lose: 1}
-                                },
-                        { new: true }
-                        );
-
-                        if(!updateLooser) {
-                                console.error(`Failed to update user points for looser ${looserId}`);
-                                gameNamespace.to(sessionId).emit("game:error", { message: "Failed to update user points." });
-                        }
-                        console.log(`User ${winnerId} points updated by ${incPoint} points.`);
-                }
-
-                gameNamespace.to(sessionId).emit("game:end", { gameState });
-               
-                
+            // Check source from metadata for both players
+            await handleGameEnd(gameState, variant);
+            gameNamespace.to(sessionId).emit("game:end", { gameState });
         }
       } catch (err) {
         gameNamespace.to(sessionId).emit("game:error", { message: err.message });
@@ -338,4 +306,151 @@ const websocketRoutes = (io) => {
   });
 };
 
+
+// async function handleMatchmakingResult(gameState, variant) {
+//     try {
+//         const incPoint = getVariantPoints(variant);
+//         const winnerId = gameState.winnerColor === 'white' ? 
+//             gameState.players.white.userId : 
+//             gameState.players.black.userId;
+//         const looserId = gameState.winnerColor === 'white' ? 
+//             gameState.players.black.userId : 
+//             gameState.players.white.userId;
+
+//         console.log(`Saving matchmaking results - Winner: ${winnerId}, Loser: ${looserId}, Points: ${incPoint}`);
+
+//         const [winnerUpdate, loserUpdate] = await Promise.all([
+//             UserModel.findByIdAndUpdate(
+//                 winnerId,
+//                 {
+//                     $inc: {
+//                         ratings: incPoint,
+//                         wins: 1
+//                     }
+//                 },
+//                 { new: true }
+//             ),
+//             UserModel.findByIdAndUpdate(
+//                 looserId,
+//                 {
+//                     $inc: { 
+//                         losses: 1
+//                     }
+//                 },
+//                 { new: true }
+//             )
+//         ]);
+
+//         console.log(`Results saved - Winner new rating: ${winnerUpdate.ratings}, Loser new losses: ${loserUpdate.losses}`);
+//         return true;
+//     } catch (error) {
+//         console.error('Error saving matchmaking results:', error);
+//         throw error;
+//     }
+// }
+
+function getVariantPoints(variant) {
+    switch(variant) {
+        case 'classic': return 1;
+        case 'crazyhouse': return 2;
+        case 'sixpointer':
+        case 'decay': return 3;
+        default: return 1;
+        }
+}
+
+async function handleGameEnd(gameState, variant) {
+    try {
+        const winnerId = gameState.winnerColor === 'white' ? 
+            gameState.players.white.userId : 
+            gameState.players.black.userId;
+        const loserId = gameState.winnerColor === 'white' ? 
+            gameState.players.black.userId : 
+            gameState.players.white.userId;
+
+        const winnerSource = gameState.metadata.source[winnerId];
+        const loserSource = gameState.metadata.source[loserId];
+
+        console.log(`Game ended - Winner: ${winnerId} (${winnerSource}), Loser: ${loserId} (${loserSource})`);
+
+        const updatePromises = [];
+
+        // Handle winner updates
+        if (winnerSource === 'tournament') {
+            const activeTournament = await tournamentModel.findOne({ status: 'active' });
+            if (activeTournament) {
+                updatePromises.push(
+                    tournamentModel.findByIdAndUpdate(
+                        activeTournament._id,
+                        {
+                            $inc: {
+                                'leaderboard.$[elem].currentStreak': 1,
+                                'leaderboard.$[elem].wins': 1
+                            }
+                        },
+                        {
+                            arrayFilters: [{ 'elem.player': winnerId }],
+                            new: true
+                        }
+                    )
+                );
+            }
+        } else {
+            // Matchmaking winner
+            updatePromises.push(
+                UserModel.findByIdAndUpdate(
+                    winnerId,
+                    {
+                        $inc: {
+                            ratings: getVariantPoints(variant),
+                            wins: 1
+                        }
+                    },
+                    { new: true }
+                )
+            );
+        }
+
+        // Handle loser updates
+        if (loserSource === 'tournament') {
+            const activeTournament = await tournamentModel.findOne({ status: 'active' });
+            if (activeTournament) {
+                updatePromises.push(
+                    tournamentModel.findByIdAndUpdate(
+                        activeTournament._id,
+                        {
+                            $set: {
+                                'leaderboard.$[elem].currentStreak': 0
+                            }
+                        },
+                        {
+                            arrayFilters: [{ 'elem.player': loserId }],
+                            new: true
+                        }
+                    )
+                );
+            }
+        } else {
+            // Matchmaking loser
+            updatePromises.push(
+                UserModel.findByIdAndUpdate(
+                    loserId,
+                    {
+                        $inc: { losses: 1 }
+                    },
+                    { new: true }
+                )
+            );
+        }
+
+        const results = await Promise.all(updatePromises);
+        console.log('Game results updated successfully:', results);
+        return true;
+    } catch (error) {
+        console.error('Error handling game end:', error);
+        throw error;
+    }
+}
+
 export default websocketRoutes;
+// Update the game:makeMove event handler section:

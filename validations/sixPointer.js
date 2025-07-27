@@ -735,42 +735,74 @@ export function getLegalMoves(fen) {
 // 6PT Chess specific game status checker (updated for new rules)
 export function check6PTGameStatus(state, gameInstance) {
   try {
-    // ... existing validation code ...
-
-    // Check if both players have completed their moves
-    const whiteMaxMoves = state.maxMoves + (state.bonusMoves.white || 0)
-    const blackMaxMoves = state.maxMoves + (state.bonusMoves.black || 0)
-    const whiteMovesCompleted = state.movesPlayed.white >= whiteMaxMoves
-    const blackMovesCompleted = state.movesPlayed.black >= blackMaxMoves
-
-    if (whiteMovesCompleted && blackMovesCompleted) {
-      // FIX: Use state.points directly instead of calculatePoints
-      const finalPoints = { ...state.points }
-      
-      // Apply timeout penalties to final score
-      if (state.timeoutPenalties) {
-        finalPoints.white -= state.timeoutPenalties.white
-        finalPoints.black -= state.timeoutPenalties.black
-        // Ensure points don't go negative
-        finalPoints.white = Math.max(0, finalPoints.white)
-        finalPoints.black = Math.max(0, finalPoints.black)
-      }
-      
-      console.log("6PT: Both players completed moves. Final points:", finalPoints)
-
-      if (finalPoints.white > finalPoints.black) {
-        return { result: "points", winnerColor: "white", reason: "white won by points", finalPoints }
-      } else if (finalPoints.black > finalPoints.white) {
-        return { result: "points", winnerColor: "black", reason: "black won by points", finalPoints }
-      } else {
-        return { result: "draw", reason: "equal points", winnerColor: null, finalPoints }
-      }
+    // Initial validation
+    if (!state || !state.movesPlayed || !state.points) {
+      console.error("Invalid state in check6PTGameStatus");
+      return { result: "ongoing", error: "Invalid state", winnerColor: null };
     }
 
-    // ... rest of the function remains the same
+    // Check if both players have completed their moves
+    const whiteMaxMoves = state.maxMoves + (state.bonusMoves?.white || 0);
+    const blackMaxMoves = state.maxMoves + (state.bonusMoves?.black || 0);
+    const whiteMovesCompleted = state.movesPlayed.white >= whiteMaxMoves;
+    const blackMovesCompleted = state.movesPlayed.black >= blackMaxMoves;
+
+    // If game is still ongoing and moves are remaining
+    if (!whiteMovesCompleted || !blackMovesCompleted) {
+      // Check for checkmate
+      if (gameInstance.isCheckmate()) {
+        const winnerColor = gameInstance.turn() === 'w' ? 'black' : 'white';
+        return { result: "checkmate", winnerColor: winnerColor };
+      }
+      
+      // Check for stalemate
+      if (gameInstance.isStalemate()) {
+        return { result: "draw", reason: "stalemate", winnerColor: null };
+      }
+      
+      // Game is still ongoing
+      return { result: "ongoing", winnerColor: null };
+    }
+
+    // If both players have completed their moves, determine winner by points
+    const finalPoints = { ...state.points };
+    
+    // Apply timeout penalties to final score
+    if (state.timeoutPenalties) {
+      finalPoints.white -= state.timeoutPenalties.white || 0;
+      finalPoints.black -= state.timeoutPenalties.black || 0;
+      // Ensure points don't go negative
+      finalPoints.white = Math.max(0, finalPoints.white);
+      finalPoints.black = Math.max(0, finalPoints.black);
+    }
+    
+    console.log("6PT: Both players completed moves. Final points:", finalPoints);
+
+    if (finalPoints.white > finalPoints.black) {
+      return { 
+        result: "points", 
+        winnerColor: "white", 
+        reason: "white won by points", 
+        finalPoints 
+      };
+    } else if (finalPoints.black > finalPoints.white) {
+      return { 
+        result: "points", 
+        winnerColor: "black", 
+        reason: "black won by points", 
+        finalPoints 
+      };
+    } else {
+      return { 
+        result: "draw", 
+        reason: "equal points", 
+        winnerColor: null, 
+        finalPoints 
+      };
+    }
   } catch (error) {
-    console.error("Error checking 6PT game status:", error)
-    return { result: "ongoing", error: error.message, winnerColor: null }
+    console.error("Error checking 6PT game status:", error);
+    return { result: "ongoing", error: error.message, winnerColor: null };
   }
 }
 

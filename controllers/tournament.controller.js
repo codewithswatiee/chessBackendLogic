@@ -2,6 +2,7 @@ import redisClient from '../config/redis.config.js';
 import { leaveQueue } from './matchmaking.controller.js'; // Import existing matchmaking functions
 import { createGameSession } from './session.controller.js'; // Import createGameSession
 import UserModel from '../models/User.model.js';
+import TournamentModel from '../models/tournament.model.js'; // Import Tournament model
 // NEW IMPORTS for flexible fallback
 import { REGULAR_QUEUE_KEYS_BY_VARIANT, REGULAR_USER_DATA_KEY } from './matchmaking.controller.js';
 
@@ -27,10 +28,22 @@ const VARIANTS = ['crazyhouse', 'sixpointer', 'decay', 'classic'];
  */
 function getRandomVariantAndSubvariant() {
     const variantsWithSubvariants = [
-        { variant: 'crazyhouse', subvariants: [] },
-        { variant: 'sixpointer', subvariants: [] },
-        { variant: 'decay', subvariants: [] },
-        { variant: 'classic', subvariants: ['blitz', 'bullet', 'standard'] }
+        { 
+            variant: 'crazyhouse', 
+            subvariants: ['standard', 'withTimer']  // Added Crazyhouse subvariants
+        },
+        { 
+            variant: 'sixpointer', 
+            subvariants: [] 
+        },
+        { 
+            variant: 'decay', 
+            subvariants: [] 
+        },
+        { 
+            variant: 'classic', 
+            subvariants: ['blitz', 'bullet', 'standard'] 
+        }
     ];
 
     const randomVariantIndex = Math.floor(Math.random() * variantsWithSubvariants.length);
@@ -39,11 +52,13 @@ function getRandomVariantAndSubvariant() {
     const variant = selectedVariant.variant;
     let subvariant = '';
 
+    // If the variant has subvariants, randomly select one
     if (selectedVariant.subvariants.length > 0) {
         const randomSubvariantIndex = Math.floor(Math.random() * selectedVariant.subvariants.length);
         subvariant = selectedVariant.subvariants[randomSubvariantIndex];
     }
 
+    console.log(`[getRandomVariantAndSubvariant] Selected ${variant}${subvariant ? `:${subvariant}` : ''}`);
     return { variant, subvariant };
 }
 
@@ -52,28 +67,49 @@ function getRandomVariantAndSubvariant() {
  * @param {Object} params - { name, capacity, startTime, duration, entryFee, prizePool }
  * @returns {string} The new tournament ID.
  */
-export async function createTournament({ name, capacity = 200, startTime = Date.now(), duration = 60 * 60 * 1000, entryFee = 0, prizePool = 0 }) {
-    const tournamentId = await redisClient.incr(TOURNAMENT_ID_COUNTER_KEY);
-    const tournamentDetails = {
-        id: tournamentId.toString(),
-        name,
-        capacity: capacity.toString(), // Store as string to be consistent with hSet
-        startTime: startTime.toString(),
-        duration: duration.toString(),
-        entryFee: entryFee.toString(),
-        prizePool: prizePool.toString(),
-        status: 'open', // 'open', 'in-progress', 'finished'
-        participantsCount: '0',
-        createdAt: Date.now().toString()
-    };
+export async function createTournament({ name, capacity = 200, startTime, endTime }) {
+    try {
+        // Create tournament in MongoDB
+        const tournament = new TournamentModel({
+            name,
+            capacity,
+            startTime: new Date(startTime),
+            endTime: new Date(endTime),
+            status: 'scheduled',
+            leaderboard: [],
+            matches: []
+        });
 
-    // Store tournament details
-    await redisClient.hSet(TOURNAMENT_DETAILS_KEY(tournamentId), tournamentDetails);
-    // Set this as the active tournament (you might want more sophisticated active tournament management)
-    await redisClient.set(TOURNAMENT_ACTIVE_KEY, tournamentId.toString());
+        await tournament.save();
+        console.log(`[createTournament] Created tournament ${tournament._id} starting at ${startTime}`);
 
-    console.log(`[createTournament] Created tournament ${tournamentId}:`, tournamentDetails);
-    return tournamentId.toString();
+        // Store tournament details in Redis for matchmaking
+        const tournamentId = tournament._id.toString();
+        await redisClient.hSet(TOURNAMENT_DETAILS_KEY(tournamentId), {
+            id: tournamentId,
+            name,
+            capacity: capacity.toString(),
+            startTime: startTime.toString(),
+            endTime: endTime.toString(),
+            status: 'scheduled',
+            participantsCount: '0'
+        });
+
+        // If tournament should be active now, update both MongoDB and Redis
+        const now = new Date();
+        if (now >= tournament.startTime) {
+            await Promise.all([
+                TournamentModel.findByIdAndUpdate(tournamentId, { status: 'active' }),
+                redisClient.hSet(TOURNAMENT_DETAILS_KEY(tournamentId), 'status', 'active'),
+                redisClient.set(TOURNAMENT_ACTIVE_KEY, tournamentId)
+            ]);
+        }
+
+        return tournamentId;
+    } catch (error) {
+        console.error('[createTournament] Error:', error);
+        throw error;
+    }
 }
 
 /**
@@ -81,24 +117,40 @@ export async function createTournament({ name, capacity = 200, startTime = Date.
  * @returns {Object|null} Tournament details or null if no active tournament.
  */
 export async function getActiveTournamentDetails() {
-    const activeTournamentId = await redisClient.get(TOURNAMENT_ACTIVE_KEY);
-    if (!activeTournamentId) {
+    try {
+        // Get active tournament from MongoDB
+        const now = new Date();
+        const activeTournament = await TournamentModel.findOne({
+            startTime: { $lte: now },
+            endTime: { $gte: now },
+            status: { $in: ['scheduled', 'active'] }
+        });
+
+        if (activeTournament) {
+            // Ensure Redis has the tournament details
+            const tournamentId = activeTournament._id.toString();
+            const redisDetails = await redisClient.hGetAll(TOURNAMENT_DETAILS_KEY(tournamentId));
+            
+            if (!redisDetails.id) {
+                // Sync tournament details to Redis if missing
+                await redisClient.hSet(TOURNAMENT_DETAILS_KEY(tournamentId), {
+                    id: tournamentId,
+                    name: activeTournament.name,
+                    capacity: activeTournament.capacity.toString(),
+                    startTime: activeTournament.startTime.toString(),
+                    endTime: activeTournament.endTime.toString(),
+                    status: activeTournament.status,
+                    participantsCount: activeTournament.leaderboard.length.toString()
+                });
+                await redisClient.set(TOURNAMENT_ACTIVE_KEY, tournamentId);
+            }
+        }
+
+        return activeTournament;
+    } catch (error) {
+        console.error('[getActiveTournamentDetails] Error:', error);
         return null;
     }
-    const details = await redisClient.hGetAll(TOURNAMENT_DETAILS_KEY(activeTournamentId));
-    if (Object.keys(details).length === 0) { // Check if the hash is empty
-        await redisClient.del(TOURNAMENT_ACTIVE_KEY); // Clean up stale active tournament
-        return null;
-    }
-    // Convert stringified numbers back to numbers
-    details.capacity = parseInt(details.capacity);
-    details.startTime = parseInt(details.startTime);
-    details.duration = parseInt(details.duration);
-    details.entryFee = parseFloat(details.entryFee);
-    details.prizePool = parseFloat(details.prizePool);
-    details.participantsCount = parseInt(details.participantsCount);
-    details.createdAt = parseInt(details.createdAt);
-    return details;
 }
 
 /**
@@ -107,70 +159,58 @@ export async function getActiveTournamentDetails() {
  */
 export async function joinTournament({ userId, socketId, io }) {
     try {
-        console.log(`[joinTournament] userId=${userId}, socketId=${socketId}`);
-
-        let activeTournament = await getActiveTournamentDetails();
-
-        // If no active tournament, create one
+        const activeTournament = await getActiveTournamentDetails();
+        
         if (!activeTournament) {
-            console.log("[joinTournament] No active tournament found, creating a new default tournament.");
-            const newTournamentId = await createTournament({
-                name: "Instant Chess Tournament",
-                capacity: 100, // Default capacity for automatically created tournaments
-                duration: 2 * 60 * 60 * 1000, // 2 hours duration
-                entryFee: 0, // Free entry
-                prizePool: 0, // No prize pool for instant tournaments
-                startTime: Date.now() // Start now
+            io.to(socketId).emit('tournament:error', { 
+                message: 'No active tournament available. Tournaments run from 9 AM to 9 PM daily.' 
             });
-            activeTournament = await getActiveTournamentDetails(); // Fetch the details of the newly created tournament
-            if (!activeTournament) {
-                io.to(socketId).emit('tournament:error', { message: 'Failed to create a new tournament.' });
-                return;
-            }
-            // Notify all connected clients about the new active tournament
-            io.emit('tournament:new_active', { tournamentId: activeTournament.id, name: activeTournament.name });
-            console.log(`[joinTournament] New tournament '${activeTournament.name}' (${activeTournament.id}) created and set as active.`);
-        }
-
-        // Check if the tournament is open for registration (should always be for newly created, but good to keep)
-        if (activeTournament.status !== 'open') {
-            io.to(socketId).emit('tournament:error', { message: 'Tournament is not open for registration.' });
             return;
         }
 
-        const tournamentId = activeTournament.id;
+        const tournamentId = activeTournament._id.toString();
 
-        // Check if user is already in the tournament (participant count is updated by join, this checks active participation)
-        const isMember = await redisClient.sIsMember(TOURNAMENT_PARTICIPANTS_KEY(tournamentId), userId);
-        if (isMember) {
-            console.log(`[joinTournament] User ${userId} already registered for tournament ${tournamentId}. Re-adding to queue for next game.`);
-            // Just ensure they are in the tournament queue with a random variant for their next game
-            await addTournamentUserToQueue(userId, socketId, tournamentId, io);
-            io.to(socketId).emit('tournament:joined', { tournament: activeTournament, status: 'already_joined' });
-            return;
-        }
-
-        // Check capacity
-        const currentParticipants = await redisClient.sCard(TOURNAMENT_PARTICIPANTS_KEY(tournamentId));
-        if (currentParticipants >= activeTournament.capacity) {
+        // Check Redis participant count first (faster)
+        const participantsCount = await redisClient.hGet(TOURNAMENT_DETAILS_KEY(tournamentId), 'participantsCount');
+        if (parseInt(participantsCount) >= activeTournament.capacity) {
             io.to(socketId).emit('tournament:error', { message: 'Tournament is full.' });
             return;
         }
 
-        // Add user to tournament participants set
-        await redisClient.sAdd(TOURNAMENT_PARTICIPANTS_KEY(tournamentId), userId);
-        await redisClient.hIncrBy(TOURNAMENT_DETAILS_KEY(tournamentId), 'participantsCount', 1);
+        // Add to MongoDB leaderboard
+        const updateResult = await TournamentModel.findByIdAndUpdate(
+            tournamentId,
+            {
+                $addToSet: {
+                    leaderboard: {
+                        player: userId,
+                        currentStreak: 0,
+                        wins: 0
+                    }
+                }
+            },
+            { new: true }
+        );
 
-        console.log(`[joinTournament] User ${userId} joined tournament ${tournamentId}.`);
+        // If successfully added to MongoDB, update Redis
+        if (updateResult) {
+            await Promise.all([
+                redisClient.sAdd(TOURNAMENT_PARTICIPANTS_KEY(tournamentId), userId),
+                redisClient.hIncrBy(TOURNAMENT_DETAILS_KEY(tournamentId), 'participantsCount', 1),
+                addTournamentUserToQueue(userId, socketId, tournamentId, io)
+            ]);
+        }
 
-        // Now, add them to the general tournament queue with a randomly assigned variant
-        await addTournamentUserToQueue(userId, socketId, tournamentId, io);
-
-        io.to(socketId).emit('tournament:joined', { tournament: activeTournament, status: 'newly_joined' });
+        io.to(socketId).emit('tournament:joined', { 
+            tournament: activeTournament,
+            status: 'newly_joined'
+        });
 
     } catch (err) {
         console.error(`[joinTournament] Error for user ${userId}:`, err);
-        io.to(socketId).emit('tournament:error', { message: 'Internal server error while joining tournament.' });
+        io.to(socketId).emit('tournament:error', { 
+            message: 'Internal server error while joining tournament.' 
+        });
     }
 }
 
@@ -376,7 +416,7 @@ export async function tryMatchTournamentUser(userId, io) {
  */
 async function initiateMatch(player1Data, player2Data, player1Socket, player2Socket, io, isCrossQueueMatch = false) {
     // When a tournament player matches with a regular queue player,
-    // the game's variant and subvariant will be determined by the regular player's (player2Data) variant.
+    // the game's variant and subvariant will be determined by the regular player's (player2) variant.
     // Otherwise, it uses player1Data's variant (tournament to tournament match).
 
     const { userId: userId1 } = player1Data;
@@ -409,7 +449,14 @@ async function initiateMatch(player1Data, player2Data, player1Socket, player2Soc
 
     if (isCrossQueueMatch) {
         // player2 is from a regular queue
-        const player2QueueKey = player2Data.variant === 'classic' ? `queue:classic:${player2Data.subvariant}` : `queue:${player2Data.variant}`;
+        let player2QueueKey;
+        if (player2Data.variant === 'classic') {
+            player2QueueKey = `queue:classic:${player2Data.subvariant}`;
+        } else if(player2Data.variant === 'crazyhouse') {
+            player2QueueKey = `queue:crazyhouse:${player2Data.subvariant}`;
+        } else {
+            player2QueueKey = `queue:${player2Data.variant}`;
+        }
         await redisClient.zRem(player2QueueKey, userId2);
         await redisClient.del(REGULAR_USER_DATA_KEY(userId2)); // Clear regular user data
     } else {
@@ -450,44 +497,55 @@ async function initiateMatch(player1Data, player2Data, player1Socket, player2Soc
     const player1 = {
         userId: userDoc1._id.toString(),
         username: userDoc1.name,
-        rating: player1Rating || 1200, // Default if not found
+        rating: player1Rating
     };
 
     const player2 = {
         userId: userDoc2._id.toString(),
         username: userDoc2.name,
-        rating: player2Rating || 1200, // Default if not found
+        rating: player2Rating
     };
 
-    // Create game session using the determined gameVariant and gameSubvariant
+    // Create source object based on match type
+    const source = {
+        [player1.userId]: isCrossQueueMatch ? 'tournament' : 'tournament',
+        [player2.userId]: isCrossQueueMatch ? 'matchmaking' : 'tournament'
+    };
+
+    console.log(`[initiateMatch] Players: ${player1.userId} vs ${player2.userId} (${gameVariant} ${gameSubvariant})`);
+    console.log(`[initiateMatch] Sources: Player1=${source[player1.userId]}, Player2=${source[player2.userId]}`);
+
+    // Create game session with source information
     const { sessionId, gameState } = await createGameSession(
         player1,
         player2,
         gameVariant.toLowerCase(),
         gameSubvariant.toLowerCase(),
-        'tournament'
+        source  // Pass the source object instead of just 'tournament'
     );
 
-    console.log(`[initiateMatch] Created game session: ${sessionId}`);
-
+    // Emit match events with source information
     player1Socket.emit('queue:matched', {
         opponent: { userId: userDoc2._id, name: userDoc2.name },
         variant: gameVariant,
         sessionId,
         gameState,
         subvariant: gameSubvariant,
-        tournamentMatch: !isCrossQueueMatch // Indicate if this was a *pure* tournament match
+        tournamentMatch: !isCrossQueueMatch,
+        source: source[player1.userId]  // Add source to emitted data
     });
+
     player2Socket.emit('queue:matched', {
         opponent: { userId: userDoc1._id, name: userDoc1.name },
         variant: gameVariant,
         sessionId,
         gameState,
         subvariant: gameSubvariant,
-        tournamentMatch: !isCrossQueueMatch // Indicate if this was a *pure* tournament match
+        tournamentMatch: !isCrossQueueMatch,
+        source: source[player2.userId]  // Add source to emitted data
     });
 
-    console.log(`[Matched] Successfully matched user ${userId1} with ${userId2} in ${gameVariant} (Cross-queue: ${isCrossQueueMatch})`);
+    console.log(`[Matched] ${sessionId}: Successfully matched user ${userId1} with ${userId2} in ${gameVariant} (Cross-queue: ${isCrossQueueMatch})`);
 }
 
 /**
@@ -551,3 +609,55 @@ export async function cleanupIdleTournamentUsers() {
 
 // Set up periodic cleanup for tournament users
 setInterval(cleanupIdleTournamentUsers, 60 * 1000);
+
+/**
+ * Schedule automatic tournaments creation and cleanup.
+ */
+
+
+/**
+ * Handle the result of a tournament match, updating winner/loser stats.
+ * @param {string} winnerId - The userId of the match winner
+ * @param {string} loserId - The userId of the match loser
+ * @param {string} tournamentId - The tournament's ID
+ */
+export async function handleTournamentMatchResult(winnerId, loserId, tournamentId) {
+    try {
+        // Update winner's streak and tournament stats
+        await TournamentModel.findByIdAndUpdate(
+            tournamentId,
+            {
+                $inc: {
+                    'leaderboard.$[winner].currentStreak': 1,
+                    'leaderboard.$[winner].wins': 1
+                },
+                $set: {
+                    'leaderboard.$[loser].currentStreak': 0
+                }
+            },
+            {
+                arrayFilters: [
+                    { 'winner.player': winnerId },
+                    { 'loser.player': loserId }
+                ]
+            }
+        );
+
+        // Update user's personal best streak
+        const winner = await UserModel.findById(winnerId);
+        if (winner) {
+            const tournamentEntry = await TournamentModel.findOne(
+                { _id: tournamentId },
+                { 'leaderboard': { $elemMatch: { player: winnerId } } }
+            );
+            
+            const currentStreak = tournamentEntry?.leaderboard[0]?.currentStreak || 0;
+            if (currentStreak > winner.personalBestStreak) {
+                winner.personalBestStreak = currentStreak;
+                await winner.save();
+            }
+        }
+    } catch (error) {
+        console.error('[handleTournamentMatchResult] Error:', error);
+    }
+}

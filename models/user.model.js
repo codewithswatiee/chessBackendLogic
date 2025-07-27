@@ -39,6 +39,14 @@ const User = new mongoose.Schema(
             updatedAt: {
               type: Date,
               default: Date.now
+            },
+            currentTournamentStreak: {
+              type: Number,
+              default: 0
+            },
+            personalBestStreak: {
+              type: Number,
+              default: 0
             }
           }
 )

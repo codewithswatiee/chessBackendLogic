@@ -10,7 +10,8 @@ import { Server } from "socket.io";
 import authRoutes from "./router/auth.route.js";
 import websocketRoutes from "./Websockets/websocket.controller.js";
 import UserModel from "./models/User.model.js";
-
+import { createTournament } from "./controllers/tournament.controller.js";
+import cron from 'node-cron';
 dotenv.config();
 
 const app = express();
@@ -83,6 +84,28 @@ app.use("/api/leaderboard",  async (req, res) => {
 
 // web-socket
 websocketRoutes(io);
+
+cron.schedule('28 17 * * *', async () => {
+        try {
+            const now = new Date();
+            // For testing, use current time
+            const startTime = new Date(now);
+            const endTime = new Date(now);
+            startTime.setHours(17, 25, 0, 0); // Set start time to 9 AM
+            endTime.setHours(21, 0, 0, 0); // Set end time to 9 PM
+            
+            await createTournament({ 
+                name: `Daily Tournament ${now.toLocaleDateString()}`, 
+                capacity: 200,
+                startTime: startTime,
+                endTime: endTime
+            });
+
+            console.log(`[scheduleAutomaticTournaments] Created daily tournament starting at ${startTime}`);
+        } catch (error) {
+            console.error('[scheduleAutomaticTournaments] Failed to create daily tournament:', error);
+        }
+    });
 
 // MongoDB Connection
 mongoose

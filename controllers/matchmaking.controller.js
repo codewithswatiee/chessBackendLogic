@@ -153,36 +153,47 @@ async function initiateMatch(player1Data, player2Data, player1Socket, player2Soc
         rating: p2Rating 
     };
 
+    // Create source object for game session
+    const source = {
+        [userId1]: player1IsTournament ? 'tournament' : 'matchmaking',
+        [userId2]: player2IsTournament ? 'tournament' : 'matchmaking'
+    };
+
+    // Pass the source object to createGameSession
     const { sessionId, gameState } = await createGameSession(
         player1,
         player2,
         gameVariant.toLowerCase(),
         gameSubvariant,
-        'battle'
+        source  // Now passing the source object instead of a single string
     );    
 
     console.log(`[initiateMatch] Created game session: ${sessionId}`);
 
+    // Include source in the match events
     player1Socket.emit('queue:matched', {
         opponent: { userId: userDoc2._id, name: userDoc2.name },
         variant: gameVariant,
         sessionId,
         gameState,
         subvariant: gameSubvariant,
-        tournamentMatch: player1IsTournament && player2IsTournament // Only true if both are tournament players
+        tournamentMatch: player1IsTournament && player2IsTournament,
+        source: source[userId1]  // Include player's source
     });
+
     player2Socket.emit('queue:matched', {
         opponent: { userId: userDoc1._id, name: userDoc1.name },
         variant: gameVariant,
         sessionId,
         gameState,
         subvariant: gameSubvariant,
-        tournamentMatch: player1IsTournament && player2IsTournament // Only true if both are tournament players
+        tournamentMatch: player1IsTournament && player2IsTournament,
+        source: source[userId2]  // Include player's source
     });
 
 
 
-    console.log(`[Matched] Successfully matched user ${userId1} with ${userId2} in ${gameVariant} (P1 is T: ${player1IsTournament}, P2 is T: ${player2IsTournament})`);
+    console.log(`[Matched] Successfully matched user ${userId1} (${source[userId1]}) with ${userId2} (${source[userId2]}) in ${gameVariant}`);
 }
 
 
