@@ -12,6 +12,8 @@ import websocketRoutes from "./Websockets/websocket.controller.js";
 import UserModel from "./models/User.model.js";
 import { createTournament } from "./controllers/tournament.controller.js";
 import cron from 'node-cron';
+import { v1LeaderboardController } from "./controllers/leaderboards/1v1leaderboard.controller.js";
+import { getTournamentLeaderboard } from "./controllers/leaderboards/tournamentLeaderboard.controller.js";
 dotenv.config();
 
 const app = express();
@@ -68,31 +70,21 @@ app.get("/", (req, res) => {
 });
 
 app.use("/api/auth", authRoutes);
-app.use("/api/leaderboard",  async (req, res) => {
-  try {
-    const users = await UserModel.find({})
-      .sort({ ratings: -1 })  
-      .select('_id email name ratings win lose');
-
-    res.status(200).json({ success: true, users });
-  } catch (err) {
-    console.error('[GET /users/ratings]', err);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
-  }
-});
+app.use("/api/leaderboard",  v1LeaderboardController);
+app.use("/api/tournaments", getTournamentLeaderboard);
 
 
 // web-socket
 websocketRoutes(io);
 
-cron.schedule('28 17 * * *', async () => {
+cron.schedule('08 00 * * *', async () => {
         try {
             const now = new Date();
             // For testing, use current time
             const startTime = new Date(now);
             const endTime = new Date(now);
-            startTime.setHours(17, 25, 0, 0); // Set start time to 9 AM
-            endTime.setHours(21, 0, 0, 0); // Set end time to 9 PM
+            startTime.setHours(0, 8, 0, 0); // Set start time to 9 AM
+            endTime.setHours(24, 0, 0, 0); // Set end time to 9 PM
             
             await createTournament({ 
                 name: `Daily Tournament ${now.toLocaleDateString()}`, 
@@ -109,12 +101,7 @@ cron.schedule('28 17 * * *', async () => {
 
 // MongoDB Connection
 mongoose
-  .connect(process.env.MONGO_URI,
-     {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-
-  })
+  .connect(process.env.MONGO_URI)
   .then(() => {
     console.log("Connected to MongoDB");
     server.listen(PORT, () => {
